@@ -1,88 +1,62 @@
 #include "ultrasonic_interrupt.h"
 #include "hardware/gpio.h"
-#include "pico/time.h"
-#include <stdio.h>
-#include <stdlib.h>
+#include "hardware/irq.h"
+#include "hardware/timer.h"
 
-static uint TRIG_PIN;
-static uint ECHO_PIN;
+static uint trig_pin, echo_pin;
+static volatile absolute_time_t echo_start, echo_end;
+static volatile bool echo_received = false;
 
-static absolute_time_t echo_start, echo_end;
-static volatile bool pulse_started = false;
-static volatile bool pulse_done = false;
-
-// --- Median filter buffer ---
-#define SAMPLE_SIZE 5
-static uint16_t distance_buffer[SAMPLE_SIZE];
-static int buffer_index = 0;
-
-// Interrupt handler for ECHO pin
-void echo_callback(uint gpio, uint32_t events) {
-    if (gpio != ECHO_PIN) return;
-
+static void echo_callback(uint gpio, uint32_t events) {
     if (events & GPIO_IRQ_EDGE_RISE) {
         echo_start = get_absolute_time();
-        pulse_started = true;
-    } else if ((events & GPIO_IRQ_EDGE_FALL) && pulse_started) {
+    } else if (events & GPIO_IRQ_EDGE_FALL) {
         echo_end = get_absolute_time();
-        pulse_done = true;
+        echo_received = true;
     }
 }
 
-void ultrasonic_init(uint trig_pin, uint echo_pin) {
-    TRIG_PIN = trig_pin;
-    ECHO_PIN = echo_pin;
+void ultrasonic_init(uint trig, uint echo) {
+    trig_pin = trig;
+    echo_pin = echo;
 
-    gpio_init(TRIG_PIN);
-    gpio_set_dir(TRIG_PIN, GPIO_OUT);
-    gpio_put(TRIG_PIN, 0);
+    gpio_init(trig_pin);
+    gpio_set_dir(trig_pin, GPIO_OUT);
+    gpio_put(trig_pin, 0);
 
-    gpio_init(ECHO_PIN);
-    gpio_set_dir(ECHO_PIN, GPIO_IN);
+    gpio_init(echo_pin);
+    gpio_set_dir(echo_pin, GPIO_IN);
+    gpio_pull_down(echo_pin);
 
-    gpio_set_irq_enabled_with_callback(ECHO_PIN,
-        GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &echo_callback);
-
-    // Initialize median buffer
-    for (int i = 0; i < SAMPLE_SIZE; i++) distance_buffer[i] = 0;
-}
-
-bool ultrasonic_trigger() {
-    if (pulse_done || pulse_started) return false;
-
-    gpio_put(TRIG_PIN, 1);
-    sleep_us(10);
-    gpio_put(TRIG_PIN, 0);
-    return true;
-}
-
-// Comparison function for qsort
-static int compare_u16(const void *a, const void *b) {
-    uint16_t ua = *(const uint16_t*)a;
-    uint16_t ub = *(const uint16_t*)b;
-    return (ua > ub) - (ua < ub);
+    gpio_set_irq_enabled_with_callback(echo_pin,
+        GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL,
+        true,
+        &echo_callback);
 }
 
 bool ultrasonic_read_cm(uint16_t* distance_cm) {
-    if (!pulse_done) return false;
+    echo_received = false;
 
-    pulse_done = false;
-    pulse_started = false;
+    // Send 10us pulse
+    gpio_put(trig_pin, 1);
+    busy_wait_us_32(10);
+    gpio_put(trig_pin, 0);
+
+    // Wait for echo to complete or timeout
+    absolute_time_t timeout = make_timeout_time_ms(40);  // ~680cm max
+    while (!echo_received) {
+        if (absolute_time_diff_us(get_absolute_time(), timeout) <= 0) {
+            return false;  // Timed out
+        }
+    }
 
     int64_t pulse_duration = absolute_time_diff_us(echo_start, echo_end);
-    uint16_t new_reading = (uint16_t)(pulse_duration / 58);  // Convert to cm
+    // Distance in cm: time_us / 58
+    if (pulse_duration > 0 && pulse_duration < 40000) {
+        *distance_cm = pulse_duration / 58;
+        return true;
+    }
 
-    // Add to buffer
-    distance_buffer[buffer_index] = new_reading;
-    buffer_index = (buffer_index + 1) % SAMPLE_SIZE;
-
-    // Copy and sort for median
-    uint16_t sorted[SAMPLE_SIZE];
-    for (int i = 0; i < SAMPLE_SIZE; i++) sorted[i] = distance_buffer[i];
-    qsort(sorted, SAMPLE_SIZE, sizeof(uint16_t), compare_u16);
-
-    // Return median
-    *distance_cm = sorted[SAMPLE_SIZE / 2];
-    return true;
+    return false;  // Invalid reading
 }
 

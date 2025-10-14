@@ -4,3 +4,5 @@ both doesn't account far distance or when you cover sensor yet
 still work in progress will update this text file for progress
 - 14/10/25
 
+14-10-25
+New Changes: Kalman Filtered applied with this batch of codes

@@ -14,6 +14,7 @@ pico_sdk_init()
 add_executable(ultrasonic_interrupt_demo
     main.c
     ultrasonic_interrupt.c
+    kalman_filter.c
 )
 
 # Link libraries
