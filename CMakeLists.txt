@@ -1,19 +1,21 @@
-add_executable(roboDriver roboDriver.c)
-
-# pull in common dependencies and additional hardware support
-target_link_libraries(roboDriver 
-    pico_stdlib 
-    hardware_gpio
-    hardware_timer
-    hardware_pwm
+add_executable(pico_wifi_client
+    main.c
+    functions.c
 )
 
-# enable usb output, enable uart output
-pico_enable_stdio_usb(roboDriver 1)
-pico_enable_stdio_uart(roboDriver 1)
+# Make compiler aware of header files
+target_include_directories(pico_wifi_client PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}         # your project folder
+    ${CMAKE_CURRENT_LIST_DIR}/lwipopts # folder with lwipopts.h
+)
 
-# create map/bin/hex/uf2 file etc.
-pico_add_extra_outputs(roboDriver)
+target_link_libraries(pico_wifi_client
+    pico_stdlib
+    pico_cyw43_arch_lwip_threadsafe_background
+    pico_lwip_mqtt
+)
 
-# add url via pico_set_program_url
-example_auto_set_url(roboDriver)
+pico_add_extra_outputs(pico_wifi_client)
+
+pico_enable_stdio_usb(pico_wifi_client 1)
+pico_enable_stdio_uart(pico_wifi_client 1)
