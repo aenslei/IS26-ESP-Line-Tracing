@@ -1,10 +1,12 @@
 cmake_minimum_required(VERSION 3.13)
+
+# Initialize Pico SDK before project()
+include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
+
 project(servo C CXX ASM)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 
-add_compile_options(-mcpu=cortex-m0plus -mthumb)
-
-# Pull in Pico SDK
-include($ENV{PICO_SDK_PATH}/pico_sdk_init.cmake)
 pico_sdk_init()
 
 add_executable(servo.elf
@@ -20,4 +22,5 @@ target_link_libraries(servo.elf
 )
 
 pico_add_extra_outputs(servo.elf)
+
 

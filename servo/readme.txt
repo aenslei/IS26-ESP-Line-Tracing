@@ -1,2 +1,4 @@
 at your own risk T~T
 HELP MEEEEEEEE
+
+v2 - at 10 degree angles, prints direction of where it sweeps, pauses a while at each angle for USS to do its thingy
