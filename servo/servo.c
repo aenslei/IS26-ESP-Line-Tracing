@@ -8,7 +8,7 @@ static uint servo_slice;
 // Convert logical angle (absolute 0–180°) to PWM pulse width (1000–2000 µs)
 static uint16_t servo_angle_to_us(uint8_t angle) {
     if (angle > 180) angle = 180;
-    return 1000 + ((angle * 1000) / 180);  // 1ms–2ms range
+    return 500 + ((angle * 2000) / 180);  // 0.5ms–2.5ms range
 }
 
 // Initialize servo PWM on a specific GPIO pin

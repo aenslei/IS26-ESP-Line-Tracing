@@ -4,9 +4,9 @@
 
 #define SERVO_PIN 15
 
-#define LEFT_LIMIT   -70   // degrees left
-#define RIGHT_LIMIT  +70   // degrees right
-#define STEP_SIZE    10
+#define LEFT_LIMIT   -80   // degrees left
+#define RIGHT_LIMIT  +80   // degrees right
+#define STEP_SIZE    5
 #define STEP_DELAY   2000  // 2 seconds per step (ms)
 
 int main() {
