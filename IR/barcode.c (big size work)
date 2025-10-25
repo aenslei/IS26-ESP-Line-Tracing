@@ -188,12 +188,12 @@ static void flushVoltageClassification(){
 static char compareTwoArray () {
     int* barsRead = thickThinClassification();
 
-    if(voltageClassifications[0].blackWhite == 0){
-        return 0;
-    }
+    // Remove this check - Code 39 can start with either black or white
+    // if(voltageClassifications[0].blackWhite == 0){
+    //     return 0;
+    // }
 
     char* string = intArrayToString(barsRead, BARCODE_ARR_SIZE);
-    free(barsRead);
 
     printf("[DEBUG] Pattern: %s\n\r", string);
 
@@ -222,6 +222,7 @@ static char compareTwoArray () {
     }
 
     free(string);
+    printf("[DEBUG] No character match found\n\r");
     return 0;
 }
 
