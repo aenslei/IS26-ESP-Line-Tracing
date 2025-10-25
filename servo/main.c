@@ -2,18 +2,17 @@
 #include "pico/stdlib.h"
 #include "servo.h"
 
-#define SERVO_PIN 15
-
-#define LEFT_LIMIT   -80   // degrees left
-#define RIGHT_LIMIT  +80   // degrees right
+#define SERVO_PIN    15
+#define LEFT_LIMIT   -80    // degrees left
+#define RIGHT_LIMIT  +80    // degrees right
 #define STEP_SIZE    5
-#define STEP_DELAY   2000  // 2 seconds per step (ms)
+#define STEP_DELAY   2000   // 2 seconds per step (ms)
 
 int main() {
     stdio_init_all();
     servo_init(SERVO_PIN);
 
-    printf("=== Centered Servo USS-Compatible Sweep (±70°, 2s per step, Flipped) ===\n");
+    printf("=== Centered Servo USS-Compatible Sweep (±80°, 2s per step, Flipped) ===\n");
     printf("GP15 = Servo PWM pin\n");
 
     servo_set_relative(0);
@@ -22,29 +21,31 @@ int main() {
 
     while (true) {
         // --- LEFT SWEEP (flipped) ---
-        printf("\n[SCAN] Sweeping LEFT side (0° → -70°)...\n");
+        printf("\n[SCAN] Sweeping LEFT side (0° → -80°)...\n");
         for (int angle = 0; angle >= LEFT_LIMIT; angle -= STEP_SIZE) {
             servo_set_relative(-angle);  // 🔁 flip direction
             printf("[LEFT ] → %+4d° (abs: %3d°)\n", angle, 90 - angle);
             sleep_ms(STEP_DELAY);
         }
 
-        servo_set_relative(0);
+        // Smooth return to center
+        printf("[RETURN] Smoothly returning to center...\n");
+        servo_smooth_move_relative(-LEFT_LIMIT, 0, STEP_SIZE, STEP_DELAY / 2);
         printf("[CENTER] Reset to 0° before right scan.\n");
         sleep_ms(2000);
 
         // --- RIGHT SWEEP (flipped) ---
-        printf("[SCAN] Sweeping RIGHT side (0° → +70°)...\n");
+        printf("[SCAN] Sweeping RIGHT side (0° → +80°)...\n");
         for (int angle = 0; angle <= RIGHT_LIMIT; angle += STEP_SIZE) {
             servo_set_relative(-angle);  // 🔁 flip direction
             printf("[RIGHT] → %+4d° (abs: %3d°)\n", angle, 90 - angle);
             sleep_ms(STEP_DELAY);
         }
 
-        servo_set_relative(0);
+        // Smooth return to center
+        printf("[RETURN] Smoothly returning to center...\n");
+        servo_smooth_move_relative(-RIGHT_LIMIT, 0, STEP_SIZE, STEP_DELAY / 2);
         printf("[CENTER] Returned to 0° (absolute 90°)\n");
         sleep_ms(3000);
     }
 }
-
-
