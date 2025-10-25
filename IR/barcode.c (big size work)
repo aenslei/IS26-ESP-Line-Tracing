@@ -1,0 +1,426 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <inttypes.h>
+#include <string.h>
+#include <math.h>
+
+#include "pico/stdlib.h"
+#include "pico/stdio.h"
+#include "pico/binary_info.h"
+#include "hardware/adc.h"
+#include "hardware/gpio.h"
+
+#define BAUD_RATE 115200
+#define ADC_PIN 26
+#define DIGITAL_PIN 22
+
+// Sensor readings: Below 400 = WHITE, Above 400 = BLACK
+#define WHITE_THRESHOLD 400
+#define BLACK_THRESHOLD 3000  // Not used, keeping for reference
+
+#define ADC_DIFFERENCE_THRESHHOLD 50
+
+#define BARCODE_BUF_SIZE 10
+#define BARCODE_ARR_SIZE 9
+#define SAMPLE_SIZE 100
+
+uint8_t barcodeFirstChar=0;
+uint8_t barcodeSecondChar=0;
+uint8_t barcodeThirdChar=0;
+
+enum bartype{
+    THICK_BLACK, // 0
+    THIN_BLACK, // 1
+    THICK_WHITE, // 2
+    THIN_WHITE // 3
+};
+
+static char* A_ARRAY_MAP = "031213130";
+static char* B_ARRAY_MAP = "130213130";
+static char* C_ARRAY_MAP = "030213131";
+static char* D_ARRAY_MAP = "131203130";
+static char* E_ARRAY_MAP = "031203131";
+static char* F_ARRAY_MAP = "130203131";
+static char* G_ARRAY_MAP = "131213030";
+static char* H_ARRAY_MAP = "031213031";
+static char* I_ARRAY_MAP = "130213031";
+static char* J_ARRAY_MAP = "131203031";
+static char* K_ARRAY_MAP = "031213120";
+static char* L_ARRAY_MAP = "130213120";
+static char* M_ARRAY_MAP = "030213121";
+static char* N_ARRAY_MAP = "131203120";
+static char* O_ARRAY_MAP = "031203121";
+static char* P_ARRAY_MAP = "130203121";
+static char* Q_ARRAY_MAP = "131213020";
+static char* R_ARRAY_MAP = "031213021";
+static char* S_ARRAY_MAP = "130213021";
+static char* T_ARRAY_MAP = "131203021";
+static char* U_ARRAY_MAP = "021213130";
+static char* V_ARRAY_MAP = "120213130";
+static char* W_ARRAY_MAP = "020213131";
+static char* X_ARRAY_MAP = "121203130";
+static char* Y_ARRAY_MAP = "021203131";
+static char* Z_ARRAY_MAP = "120303131";
+static char* ASTERISK_ARRAY_MAP = "121203031";
+
+static uint32_t res = 0;
+static uint16_t prevAvg = 0;
+static int i = 0;
+static int barcode_arr_index = 1;
+
+static absolute_time_t blockStart;
+static absolute_time_t blockEnd;
+
+static uint32_t sample_count = 0;
+static uint32_t transition_count = 0;
+static volatile bool scanning_enabled = true;
+
+struct voltageClassification {
+    uint16_t voltage;
+    int blackWhite;
+    absolute_time_t blockStart;
+    int64_t blockLength;
+    enum bartype type;
+};
+
+static struct voltageClassification voltageClassifications[BARCODE_BUF_SIZE];
+static char barcodeRead[3] = {0};
+
+static void appendToBarcodeRead(char barcodeChar){
+    barcodeRead[0] = barcodeRead[1];
+    barcodeRead[1] = barcodeRead[2];
+    barcodeRead[2] = barcodeChar;
+}
+
+static int isValidBarcode(){
+    if(barcodeRead[0] == '*' && barcodeRead[2] == '*'){
+        if(barcodeRead[1] != 0)
+            return 1;
+    }
+    return 0;
+}
+
+static void clearBarcodeRead(){
+    barcodeRead[0] = 0;
+    barcodeRead[1] = 0;
+    barcodeRead[2] = 0;
+}
+
+static char *intArrayToString(int *arr, int size){
+    char *str = malloc(size + 1);
+    for(int i = 0; i < size; i++){
+        str[i] = arr[i] + '0';
+    }
+    str[size] = '\0';
+    return str;
+}
+
+static int* thickThinClassification(){
+    // Collect all bar lengths with their indices
+    typedef struct {
+        int64_t length;
+        int index;
+    } BarLength;
+    
+    BarLength lengths[BARCODE_ARR_SIZE];
+    
+    for(int i = 0; i < BARCODE_ARR_SIZE; i++){
+        lengths[i].length = voltageClassifications[i].blockLength;
+        lengths[i].index = i;
+    }
+    
+    // Sort by length
+    for(int i = 0; i < BARCODE_ARR_SIZE - 1; i++){
+        for(int j = i + 1; j < BARCODE_ARR_SIZE; j++){
+            if(lengths[i].length > lengths[j].length){
+                BarLength temp = lengths[i];
+                lengths[i] = lengths[j];
+                lengths[j] = temp;
+            }
+        }
+    }
+    
+    // In Code 39: 6 narrow bars, 3 wide bars
+    // Threshold is between the 6th and 7th sorted values
+    int64_t threshold = (lengths[5].length + lengths[6].length) / 2;
+
+    int *barsRead = malloc(BARCODE_ARR_SIZE * sizeof(int));
+
+    for(int i = 0; i < BARCODE_ARR_SIZE; i++){
+        if(voltageClassifications[i].blackWhite){
+            if(voltageClassifications[i].blockLength < threshold){
+                voltageClassifications[i].type = THIN_BLACK;
+                barsRead[i] = 1;
+            }else{
+                voltageClassifications[i].type = THICK_BLACK;
+                barsRead[i] = 0;
+            }
+        }else{
+            if(voltageClassifications[i].blockLength < threshold){
+                voltageClassifications[i].type = THIN_WHITE;
+                barsRead[i] = 3;
+            }else{
+                voltageClassifications[i].type = THICK_WHITE;
+                barsRead[i] = 2;
+            }
+        }
+    }
+    
+    return barsRead;
+}
+
+static void flushVoltageClassification(){
+    barcode_arr_index = 1;
+    blockStart = get_absolute_time();
+
+    struct voltageClassification lastReading = voltageClassifications[BARCODE_BUF_SIZE - 1];
+
+    for(int i = 0; i < BARCODE_BUF_SIZE; i++){
+        voltageClassifications[i].voltage = 0;
+        voltageClassifications[i].blackWhite = -1;
+        voltageClassifications[i].blockLength = 0;
+        voltageClassifications[i].type = 0;
+    }
+
+    voltageClassifications[0] = lastReading;
+}   
+
+static char compareTwoArray () {
+    int* barsRead = thickThinClassification();
+
+    if(voltageClassifications[0].blackWhite == 0){
+        return 0;
+    }
+
+    char* string = intArrayToString(barsRead, BARCODE_ARR_SIZE);
+    free(barsRead);
+
+    printf("[DEBUG] Pattern: %s\n\r", string);
+
+    char* barcodes[] = {
+        A_ARRAY_MAP, B_ARRAY_MAP, C_ARRAY_MAP, D_ARRAY_MAP,
+        E_ARRAY_MAP, F_ARRAY_MAP, G_ARRAY_MAP, H_ARRAY_MAP,
+        I_ARRAY_MAP, J_ARRAY_MAP, K_ARRAY_MAP, L_ARRAY_MAP,
+        M_ARRAY_MAP, N_ARRAY_MAP, O_ARRAY_MAP, P_ARRAY_MAP,
+        Q_ARRAY_MAP, R_ARRAY_MAP, S_ARRAY_MAP, T_ARRAY_MAP,
+        U_ARRAY_MAP, V_ARRAY_MAP, W_ARRAY_MAP, X_ARRAY_MAP,
+        Y_ARRAY_MAP, Z_ARRAY_MAP, ASTERISK_ARRAY_MAP   
+    };
+
+    char characters[] = {
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
+        'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R',
+        'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '*'
+    };
+    
+    for(int i = 0; i < 27; i++){
+        if(strncmp(barcodes[i], string, BARCODE_ARR_SIZE) == 0){
+            free(string);
+            flushVoltageClassification();
+            return characters[i];
+        }
+    }
+
+    free(string);
+    return 0;
+}
+
+static void appendVoltageClassification(struct voltageClassification voltageClassification){
+    voltageClassifications[0] = voltageClassifications[1];
+    voltageClassifications[1] = voltageClassifications[2];
+    voltageClassifications[2] = voltageClassifications[3];
+    voltageClassifications[3] = voltageClassifications[4];
+    voltageClassifications[4] = voltageClassifications[5];
+    voltageClassifications[5] = voltageClassifications[6];
+    voltageClassifications[6] = voltageClassifications[7];
+    voltageClassifications[7] = voltageClassifications[8];
+    voltageClassifications[8] = voltageClassifications[9];
+    voltageClassifications[9] = voltageClassification;
+}
+
+static void ADC_IRQ_FIFO_HANDLER() {
+    if(!adc_fifo_is_empty()){
+        uint16_t data = adc_fifo_get();
+        
+        if(!scanning_enabled){
+            irq_clear(ADC_IRQ_FIFO);
+            return;
+        }
+        
+        res += data;
+        
+        if(i < SAMPLE_SIZE){
+            i++;
+        }else{
+            uint16_t avg = res / i;
+            sample_count++;
+
+            if(sample_count % 100 == 0){
+                printf("[SENSOR] ADC: %"PRIu16", Digital: %d, Avg: %"PRIu16"\n\r", 
+                       data, gpio_get(DIGITAL_PIN), avg);
+            }
+
+            if(prevAvg == 0){
+                prevAvg = avg;
+            }else{
+                if(abs(prevAvg - avg) > ADC_DIFFERENCE_THRESHHOLD){
+                    prevAvg = avg;
+                }else{
+                    avg = prevAvg;
+                }
+            }
+            
+            i = 0;
+            res = 0;
+
+            struct voltageClassification voltageClassification;
+            voltageClassification.voltage = avg;
+            
+            // Below 400 = WHITE, Above 400 = BLACK
+            if(avg >= WHITE_THRESHOLD || gpio_get(DIGITAL_PIN) == 1){
+                voltageClassification.blackWhite = 1;  // Black
+            }else{
+                voltageClassification.blackWhite = 0;  // White
+            }
+
+            if(barcode_arr_index == BARCODE_BUF_SIZE){
+                if(voltageClassifications[BARCODE_BUF_SIZE - 1].blackWhite != voltageClassification.blackWhite){
+                    blockEnd = get_absolute_time();
+                    voltageClassification.blockStart = blockEnd;
+                    
+                    int64_t blockLength = absolute_time_diff_us(voltageClassifications[BARCODE_BUF_SIZE - 1].blockStart, blockEnd);
+                    
+                    if(blockLength < 0) blockLength = -blockLength;
+                    voltageClassifications[BARCODE_BUF_SIZE - 1].blockLength = blockLength / 1000;
+                    
+                    transition_count++;
+                    printf("[TRANSITION %"PRIu32"] %s->%s, duration=%"PRId64"\n\r",
+                           transition_count,
+                           voltageClassifications[BARCODE_BUF_SIZE - 1].blackWhite ? "BLACK" : "WHITE",
+                           voltageClassification.blackWhite ? "BLACK" : "WHITE",
+                           voltageClassifications[BARCODE_BUF_SIZE - 1].blockLength);
+                    
+                    appendVoltageClassification(voltageClassification);
+                    
+                    // Check if we've hit 9 transitions
+                    if(transition_count == BARCODE_ARR_SIZE){
+                        printf("\n\r[INFO] 9 bars detected! Decoding...\n\r");
+                        char read = compareTwoArray();
+                        if(read != 0){
+                            printf("[DECODED] Character: %c\n\r", read);
+                            appendToBarcodeRead(read);
+                        }
+                        printf("[INFO] Scanning stopped. Press 'S' to scan again.\n\r\n\r");
+                        scanning_enabled = false;
+                    }
+                }
+            }else{
+                if(voltageClassifications[barcode_arr_index-1].blackWhite != voltageClassification.blackWhite){
+                    blockEnd = get_absolute_time();
+                    
+                    // Calculate the previous bar's length
+                    if(barcode_arr_index == 1){
+                        // First transition - calculate from blockStart to now
+                        int64_t blockLength = absolute_time_diff_us(blockStart, blockEnd);
+                        if(blockLength < 0) blockLength = -blockLength;
+                        voltageClassifications[0].blockLength = blockLength / 1000;
+                    } else {
+                        int64_t blockLength = absolute_time_diff_us(voltageClassifications[barcode_arr_index-1].blockStart, blockEnd);
+                        if(blockLength < 0) blockLength = -blockLength;
+                        voltageClassifications[barcode_arr_index - 1].blockLength = blockLength / 1000;
+                    }
+                    
+                    voltageClassification.blockStart = blockEnd;
+                    
+                    transition_count++;
+                    printf("[TRANSITION %"PRIu32"] %s->%s, duration=%"PRId64"\n\r",
+                           transition_count,
+                           barcode_arr_index >= 1 ? (voltageClassifications[barcode_arr_index - 1].blackWhite ? "BLACK" : "WHITE") : "START",
+                           voltageClassification.blackWhite ? "BLACK" : "WHITE",
+                           voltageClassifications[barcode_arr_index - 1].blockLength);
+                    
+                    voltageClassifications[barcode_arr_index] = voltageClassification;
+                    barcode_arr_index++;
+                    
+                    // Check if we've hit 9 transitions
+                    if(transition_count == BARCODE_ARR_SIZE){
+                        printf("\n\r[INFO] 9 bars detected! Decoding...\n\r");
+                        char read = compareTwoArray();
+                        if(read != 0){
+                            printf("[DECODED] Character: %c\n\r", read);
+                            appendToBarcodeRead(read);
+                        }
+                        printf("[INFO] Scanning stopped. Press 'S' to scan again.\n\r\n\r");
+                        scanning_enabled = false;
+                    }
+                }
+            }
+        }
+    }
+    irq_clear(ADC_IRQ_FIFO);
+}
+
+int main() {
+    stdio_init_all();
+    sleep_ms(3000);
+
+    printf("\n\r");
+    printf("Scanner initialized. Pass sensor over barcode...\n\r");
+    printf("Press 'S' to restart scanning after decode\n\r\n\r");
+
+    adc_init();
+    flushVoltageClassification();
+    
+    adc_gpio_init(ADC_PIN);
+    adc_select_input(0);
+
+    gpio_init(DIGITAL_PIN);
+    gpio_set_dir(DIGITAL_PIN, GPIO_IN);
+
+    adc_fifo_setup(true, false, 1, false, false);
+    adc_set_clkdiv(0);
+    adc_irq_set_enabled(true);
+
+    irq_clear(ADC_IRQ_FIFO);
+    irq_set_exclusive_handler(ADC_IRQ_FIFO, ADC_IRQ_FIFO_HANDLER);
+    irq_set_enabled(ADC_IRQ_FIFO, true);
+    
+    adc_run(true);
+    sleep_ms(2000);
+
+    blockStart = get_absolute_time();
+
+    while (true) {
+        // Check for 'S' key to restart
+        int c = getchar_timeout_us(0);
+        if(c == 's' || c == 'S'){
+            if(!scanning_enabled){
+                printf("\n\r[INFO] Restarting scanner...\n\r");
+                scanning_enabled = true;
+                flushVoltageClassification();
+                blockStart = get_absolute_time();
+                clearBarcodeRead();
+                transition_count = 0;
+                sample_count = 0;
+                printf("[INFO] Ready to scan!\n\r\n\r");
+            }
+        }
+
+        if(isValidBarcode()){
+            printf("\n\r****************************************\n\r");
+            printf("*** VALID BARCODE DETECTED! ***\n\r");
+            printf("****************************************\n\r");
+            barcodeFirstChar = barcodeRead[0];
+            barcodeSecondChar = barcodeRead[1];
+            barcodeThirdChar = barcodeRead[2];
+            printf("Barcode: %c%c%c\n\r", barcodeFirstChar, barcodeSecondChar, barcodeThirdChar);
+            printf("****************************************\n\r\n\r");
+            clearBarcodeRead();
+            barcodeFirstChar = 0;
+            barcodeSecondChar = 0;
+            barcodeThirdChar = 0;
+        }
+        
+        sleep_ms(10);
+    }
+}
