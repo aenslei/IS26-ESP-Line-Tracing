@@ -1,26 +1,34 @@
 cmake_minimum_required(VERSION 3.13)
 
-# Initialize Pico SDK before project()
+# Initialize the Pico SDK before defining the project
 include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 
 project(servo C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
+# Initialize the SDK
 pico_sdk_init()
 
-add_executable(servo.elf
+# Define executable and source files
+add_executable(servo
     main.c
+    servo.c
 )
 
-pico_enable_stdio_usb(servo.elf 1)
-pico_enable_stdio_uart(servo.elf 0)
+# Enable USB serial (for Tera Term) and disable UART
+pico_enable_stdio_usb(servo 1)
+pico_enable_stdio_uart(servo 0)
 
-target_link_libraries(servo.elf
+# Link required libraries
+target_link_libraries(servo
     pico_stdlib
     hardware_pwm
 )
 
-pico_add_extra_outputs(servo.elf)
+# Generate .uf2, .elf, and .bin files
+pico_add_extra_outputs(servo)
+
+
 
 
