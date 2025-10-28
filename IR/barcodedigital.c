@@ -26,7 +26,7 @@ enum bartype{
     THIN_WHITE // 3
 };
 
-static char* A_ARRAY_MAP = "031213130";
+static char* A_ARRAY_MAP = "031312130";
 static char* B_ARRAY_MAP = "130213130";
 static char* C_ARRAY_MAP = "030213131";
 static char* D_ARRAY_MAP = "131203130";
@@ -61,6 +61,7 @@ static uint32_t transition_count = 0;
 static volatile bool scanning_enabled = true;
 static volatile bool processing = false;  // Prevent interrupts during decode
 static volatile bool ready_to_decode = false;  // Signal main loop to decode
+static volatile bool waiting_for_start = true;  // NEW: waiting for * delimiter
 
 struct barTransition {
     int isBlack;              // 1 = black, 0 = white
@@ -263,14 +264,15 @@ int main() {
 
     printf("\n\r");
     printf("========================================\n\r");
-    printf("  DIGITAL PIN BARCODE SCANNER\n\r");
+    printf("  CONTINUOUS BARCODE SCANNER\n\r");
     printf("========================================\n\r");
     printf("Using GPIO %d (Digital Pin)\n\r", DIGITAL_PIN);
     printf("Black line = HIGH (1)\n\r");
     printf("White space = LOW (0)\n\r");
     printf("\n\r");
-    printf("Pass sensor over barcode...\n\r");
-    printf("Press 'S' to restart scanning\n\r");
+    printf("Scanning continuously for * delimiters...\n\r");
+    printf("Format: *X* (where X is a character)\n\r");
+    printf("Press 'R' to reset\n\r");
     printf("========================================\n\r\n\r");
 
     // Initialize GPIO for digital pin
@@ -295,25 +297,48 @@ int main() {
             
             if(decoded != 0){
                 printf("[DECODED] Character: %c\n\r", decoded);
-                appendToBarcodeRead(decoded);
-            }
-            
-            printf("[INFO] Scanning stopped. Press 'S' to scan again.\n\r\n\r");
-        }
-        
-        // Check for 'S' key to restart
-        int c = getchar_timeout_us(0);
-        if(c == 's' || c == 'S'){
-            if(!scanning_enabled){
-                printf("\n\r[INFO] Restarting scanner...\n\r");
+                
+                // Check if it's the start delimiter
+                if(decoded == '*'){
+                    if(waiting_for_start){
+                        printf("[INFO] Start delimiter '*' detected! Waiting for data character...\n\r");
+                        waiting_for_start = false;
+                        appendToBarcodeRead(decoded);
+                    } else {
+                        // It's the end delimiter
+                        printf("[INFO] End delimiter '*' detected!\n\r");
+                        appendToBarcodeRead(decoded);
+                        waiting_for_start = true;  // Reset for next barcode
+                    }
+                } else {
+                    // It's a data character
+                    appendToBarcodeRead(decoded);
+                }
+                
+                // Continue scanning
+                printf("[INFO] Continuing scan...\n\r\n\r");
                 scanning_enabled = true;
                 resetScanner();
-                clearBarcodeRead();
-                printf("[INFO] Ready to scan!\n\r\n\r");
+            } else {
+                // Failed to decode, reset and try again
+                printf("[INFO] Decode failed. Resetting...\n\r\n\r");
+                scanning_enabled = true;
+                resetScanner();
             }
         }
+        
+        // Check for 'R' key to completely reset
+        int c = getchar_timeout_us(0);
+        if(c == 'r' || c == 'R'){
+            printf("\n\r[INFO] Manual reset...\n\r");
+            scanning_enabled = true;
+            waiting_for_start = true;
+            resetScanner();
+            clearBarcodeRead();
+            printf("[INFO] Ready to scan!\n\r\n\r");
+        }
 
-        // Check for valid barcode
+        // Check for valid barcode (complete *X* pattern)
         if(isValidBarcode()){
             printf("\n\r****************************************\n\r");
             printf("*** VALID BARCODE DETECTED! ***\n\r");
@@ -322,11 +347,12 @@ int main() {
             barcodeSecondChar = barcodeRead[1];
             barcodeThirdChar = barcodeRead[2];
             printf("Barcode: %c%c%c\n\r", barcodeFirstChar, barcodeSecondChar, barcodeThirdChar);
+            printf("Data character: %c\n\r", barcodeSecondChar);
             printf("****************************************\n\r\n\r");
+            
+            // Clear for next barcode but keep scanning
             clearBarcodeRead();
-            barcodeFirstChar = 0;
-            barcodeSecondChar = 0;
-            barcodeThirdChar = 0;
+            waiting_for_start = true;
         }
         
         sleep_ms(10);
