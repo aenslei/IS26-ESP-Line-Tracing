@@ -1,43 +1,41 @@
-#include "stdio.h"
-#include "math.h"
+#include <stdio.h>
+#include <math.h>
+#include <stdbool.h>
 #include "pico/stdlib.h"
 #include "servo.h"
 #include "ultrasonic.h"
 
-#define SERVO_PIN 15
-#define TRIG_PIN  1
-#define ECHO_PIN  0
+// ---------------- Configuration ----------------
+#define TRIG_PIN             1
+#define ECHO_PIN             0
+#define SERVO_PIN           15
 
-#define LEFT_LIMIT   30
-#define RIGHT_LIMIT  150
-#define STEP_ANGLE   10
-#define STEP_SIZE    2
-#define STEP_DELAY   10
-#define SETTLE_MS    200
-#define SAFE_DISTANCE_CM 15.0f
-#define OBSTACLE_THRESHOLD_CM 30.0f
+#define STEP_SIZE            5        // step per scan (deg)
+#define LEFT_LIMIT         -50        // physical LEFT
+#define RIGHT_LIMIT         50        // physical RIGHT
+#define EDGE_THRESHOLD_CM    8.0f     // sudden jump threshold → edge detected
+#define DETECT_RANGE_CM     10.0f     // obstacle detection threshold
+#define WARNING_RANGE_CM     5.0f     // too close, immediate reverse
+#define SCAN_DELAY_MS     2000        // delay between servo steps (ms)
+#define DEFAULT_WIDTH_CM    -1.0f     // invalid marker for width
+#define SERVO_CENTER_OFFSET  0        // calibration offset if needed
+// ------------------------------------------------
 
-#define MAX_POINTS ((RIGHT_LIMIT - LEFT_LIMIT) / STEP_ANGLE + 1)
+// Utility
+static inline float deg2rad(float d) { return d * (float)M_PI / 180.0f; }
 
-typedef struct {
-    uint8_t angle;
-    float distance;
-} ScanPoint;
+// Convert a physical angle into the servo's internal logical rotation
+static inline int physical_to_servo_angle(int physical_angle) {
+    // Because servo movement is mirrored relative to USS
+    return -physical_angle + SERVO_CENTER_OFFSET;
+}
 
-ScanPoint scan_data[MAX_POINTS];
-
-void print_scan_summary(int count) {
-    printf("\n--- Scan Summary (%d points) ---\n", count);
-    for (int i = 0; i < count; i++) {
-        if (scan_data[i].distance > 0.0f)
-            printf("Angle: %3d° | Dist: %.2f cm%s\n",
-                   scan_data[i].angle,
-                   scan_data[i].distance,
-                   (scan_data[i].distance <= SAFE_DISTANCE_CM) ? "  ⚠️ Close!" : "");
-        else
-            printf("Angle: %3d° | Invalid\n", scan_data[i].angle);
-    }
-    printf("-------------------------------\n\n");
+// Compute obstacle width (physical layer)
+float obstacle_width_from_edges(float left_deg, float left_cm,
+                                float right_deg, float right_cm) {
+    float yL = left_cm  * sinf(deg2rad(left_deg));
+    float yR = right_cm * sinf(deg2rad(right_deg));
+    return fabsf(yR - yL);
 }
 
 int main() {
@@ -45,101 +43,155 @@ int main() {
     servo_init(SERVO_PIN);
     ultrasonic_init(TRIG_PIN, ECHO_PIN);
 
-    printf("=== Servo + Ultrasonic Mapping + Width + Clear-Side ===\n");
-    printf("GP15=Servo | GP1=Trig | GP0=Echo (via divider)\n");
-
-    uint8_t current_angle = 90;
-    servo_set_angle(current_angle);
-    sleep_ms(1000);
+    printf("\n=== Servo + Ultrasonic Integration (Physical-Layer Angles) ===\n");
+    printf("Convention: Negative = LEFT, Positive = RIGHT, 0 = Center\n\n");
 
     while (true) {
-        printf("\n[SCAN] Left → Right mapping...\n");
-        int count = 0;
+        // ---------- 1. Front distance check ----------
+        float front_dist = ultrasonic_get_distance_med5();
 
-        // Sweep and record
-        for (int angle = LEFT_LIMIT; angle <= RIGHT_LIMIT; angle += STEP_ANGLE) {
-            servo_smooth_move(current_angle, angle, STEP_SIZE, STEP_DELAY);
-            current_angle = angle;
-            sleep_ms(SETTLE_MS);
-
-            float dist = ultrasonic_get_distance_cm();
-            scan_data[count].angle = angle;
-            scan_data[count].distance = dist;
-            count++;
-
-            if (dist > 0.0f)
-                printf("Angle: %3d° | Distance: %.2f cm%s\n",
-                       angle, dist, (dist <= SAFE_DISTANCE_CM) ? "  ⚠️ Close!" : "");
-            else
-                printf("Angle: %3d° | No valid reading\n", angle);
+        if (!ultrasonic_is_valid(front_dist)) {
+            printf("[FRONT] Invalid USS reading.\n");
+            sleep_ms(500);
+            continue;
         }
 
-        // Return to center
-        servo_smooth_move(current_angle, 90, STEP_SIZE, STEP_DELAY);
-        current_angle = 90;
+        printf("[FRONT] Distance: %.2f cm\n", front_dist);
 
-        // --- Analyse results ---
-        print_scan_summary(count);
-
-        // Compute left/right averages
-        float left_avg = 0, right_avg = 0;
-        int left_cnt = 0, right_cnt = 0;
-        for (int i = 0; i < count; i++) {
-            if (scan_data[i].angle < 90 && scan_data[i].distance > 0) {
-                left_avg += scan_data[i].distance; left_cnt++;
-            } else if (scan_data[i].angle > 90 && scan_data[i].distance > 0) {
-                right_avg += scan_data[i].distance; right_cnt++;
-            }
+        if (front_dist <= WARNING_RANGE_CM) {
+            float reverse_cm = WARNING_RANGE_CM - front_dist;
+            printf("[WARNING] Too close! Reverse %.2f cm to gain room.\n", reverse_cm);
+            sleep_ms(2000);
+            continue;
         }
-        if (left_cnt) left_avg /= left_cnt;
-        if (right_cnt) right_avg /= right_cnt;
-
-        printf("Left avg: %.2f cm | Right avg: %.2f cm\n", left_avg, right_avg);
-        if (left_avg > right_avg)
-            printf("🡄 Clearer on the LEFT side.\n");
-        else if (right_avg > left_avg)
-            printf("🡆 Clearer on the RIGHT side.\n");
-        else
-            printf("🡅 Equal clearance on both sides.\n");
-
-        // --- Estimate obstacle width ---
-        int left_edge_index = -1, right_edge_index = -1;
-        for (int i = 0; i < count; i++) {
-            if (scan_data[i].distance > 0 &&
-                scan_data[i].distance <= OBSTACLE_THRESHOLD_CM) {
-                if (left_edge_index == -1)
-                    left_edge_index = i;
-                right_edge_index = i;
-            }
+        else if (front_dist <= DETECT_RANGE_CM) {
+            printf("[DETECTED] Obstacle %.2f cm ahead — initiating scan.\n", front_dist);
+        }
+        else {
+            printf("[CLEAR] Path clear (%.2f cm)\n", front_dist);
+            sleep_ms(500);
+            continue;
         }
 
-        if (left_edge_index != -1 && right_edge_index != -1 &&
-            right_edge_index > left_edge_index) {
-            uint8_t left_angle  = scan_data[left_edge_index].angle;
-            uint8_t right_angle = scan_data[right_edge_index].angle;
-            float avg_distance = 0.0f;
-            int mid_count = 0;
-            for (int i = left_edge_index; i <= right_edge_index; i++) {
-                if (scan_data[i].distance > 0) {
-                    avg_distance += scan_data[i].distance;
-                    mid_count++;
+        // ---------- 2. Setup variables ----------
+        bool left_edge_found = false, right_edge_found = false;
+        int left_edge_angle = 0, right_edge_angle = 0;
+        float left_edge_dist = 0.0f, right_edge_dist = 0.0f;
+        float obstacle_width = DEFAULT_WIDTH_CM;
+
+        printf("\n[RESET] Centering servo before scan...\n");
+        servo_smooth_move_relative(physical_to_servo_angle(0),
+                                   physical_to_servo_angle(0),
+                                   STEP_SIZE, 100);
+        sleep_ms(500);
+
+        // ============================================================
+        //  PHYSICAL LEFT SCAN (negative angles)
+        // ============================================================
+        printf("\n[SCAN] LEFT side (physical):\n");
+        float prev_dist = ultrasonic_get_distance_med5();
+        int prev_angle = 0;
+
+        for (int angle = -STEP_SIZE; angle >= LEFT_LIMIT; angle -= STEP_SIZE) {
+            servo_set_relative(physical_to_servo_angle(angle));
+            sleep_ms(SCAN_DELAY_MS);
+
+            float dist = ultrasonic_get_distance_med5();
+            printf("[SCAN] Dir=LEFT  | Angle=%+3d deg | Dist=%.2f cm\n", angle, dist);
+
+            if (ultrasonic_is_valid(prev_dist) && ultrasonic_is_valid(dist)) {
+                float jump = fabsf(dist - prev_dist);
+                if (jump > EDGE_THRESHOLD_CM && !left_edge_found) {
+                    left_edge_found = true;
+                    left_edge_angle = prev_angle;
+                    left_edge_dist = prev_dist;
+                    printf(" [EDGE] LEFT boundary @ %d deg (%.2f -> %.2f)\n",
+                           prev_angle, prev_dist, dist);
                 }
             }
-            if (mid_count > 0) avg_distance /= mid_count;
 
-            float angle_diff_deg = right_angle - left_angle;
-            float angle_diff_rad = angle_diff_deg * (M_PI / 180.0f);
-            float obstacle_width = 2.0f * avg_distance * sinf(angle_diff_rad / 2.0f);
-
-            printf("Obstacle detected between %d°–%d°\n", left_angle, right_angle);
-            printf("Average distance: %.2f cm\n", avg_distance);
-            printf("Estimated obstacle width: %.2f cm\n", obstacle_width);
-        } else {
-            printf("No significant obstacle detected.\n");
+            prev_dist = dist;
+            prev_angle = angle;
         }
 
-        printf("\nReturning to center (90°)...\n");
-        sleep_ms(1500);
+        servo_smooth_move_relative(physical_to_servo_angle(LEFT_LIMIT),
+                                   physical_to_servo_angle(0),
+                                   STEP_SIZE, 200);
+        sleep_ms(600);
+
+        // ============================================================
+        //  PHYSICAL RIGHT SCAN (positive angles)
+        // ============================================================
+        printf("\n[SCAN] RIGHT side (physical):\n");
+        prev_dist = ultrasonic_get_distance_med5();
+        prev_angle = 0;
+
+        for (int angle = STEP_SIZE; angle <= RIGHT_LIMIT; angle += STEP_SIZE) {
+            servo_set_relative(physical_to_servo_angle(angle));
+            sleep_ms(SCAN_DELAY_MS);
+
+            float dist = ultrasonic_get_distance_med5();
+            printf("[SCAN] Dir=RIGHT | Angle=%+3d deg | Dist=%.2f cm\n", angle, dist);
+
+            if (ultrasonic_is_valid(prev_dist) && ultrasonic_is_valid(dist)) {
+                float jump = fabsf(dist - prev_dist);
+                if (jump > EDGE_THRESHOLD_CM && !right_edge_found) {
+                    right_edge_found = true;
+                    right_edge_angle = prev_angle;
+                    right_edge_dist = prev_dist;
+                    printf(" [EDGE] RIGHT boundary @ %d deg (%.2f -> %.2f)\n",
+                           prev_angle, prev_dist, dist);
+                }
+            }
+
+            prev_dist = dist;
+            prev_angle = angle;
+        }
+
+        servo_smooth_move_relative(physical_to_servo_angle(RIGHT_LIMIT),
+                                   physical_to_servo_angle(0),
+                                   STEP_SIZE, 200);
+        sleep_ms(1000);
+
+        // ============================================================
+        //  RESULTS + DECISION
+        // ============================================================
+        printf("\n[RESULT] Edge summary (physical angles):\n");
+        printf("  LEFT  : %s @ %d deg (%.2f cm)\n",
+               left_edge_found ? "FOUND" : "NOT FOUND",
+               left_edge_angle, left_edge_dist);
+        printf("  RIGHT : %s @ %d deg (%.2f cm)\n",
+               right_edge_found ? "FOUND" : "NOT FOUND",
+               right_edge_angle, right_edge_dist);
+
+        if (left_edge_found && right_edge_found) {
+            obstacle_width = obstacle_width_from_edges(left_edge_angle, left_edge_dist,
+                                                       right_edge_angle, right_edge_dist);
+            printf("[WIDTH] Estimated obstacle width ≈ %.2f cm\n", obstacle_width);
+
+            if (right_edge_dist > left_edge_dist + 0.01f) {
+                printf("[DECISION] More space RIGHT -> turn RIGHT %d deg (%.2f cm)\n",
+                       right_edge_angle, right_edge_dist);
+            }
+            else if (left_edge_dist > right_edge_dist + 0.01f) {
+                printf("[DECISION] More space LEFT -> turn LEFT %d deg (%.2f cm)\n",
+                       left_edge_angle, left_edge_dist);
+            }
+            else {
+                printf("[DECISION] Equal clearance -> default RIGHT.\n");
+            }
+        }
+        else if (left_edge_found) {
+            printf("[DECISION] Only LEFT edge found -> turn LEFT to clear.\n");
+        }
+        else if (right_edge_found) {
+            printf("[DECISION] Only RIGHT edge found -> turn RIGHT to clear.\n");
+        }
+        else {
+            printf("[DECISION] No edges -> reverse and rescan.\n");
+        }
+
+        printf("------------------------------------------------------------\n\n");
+        sleep_ms(5000);
     }
 }
-
