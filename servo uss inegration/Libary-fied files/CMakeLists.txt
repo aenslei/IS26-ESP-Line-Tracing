@@ -1,0 +1,2 @@
+add_library(obstacle_scan_driver obstacle_scan_driver.c)
+target_include_directories(obstacle_scan_driver PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
