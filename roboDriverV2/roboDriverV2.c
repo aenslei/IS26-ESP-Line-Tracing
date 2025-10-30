@@ -15,12 +15,14 @@ bool robot_full_system_init(void) {
     printf("Initializing robot system...\n");
     
     // Initialize IMU system
+    printf("Attempting IMU initialization on Grove 4 (GP16=SDA, GP17=SCL)...\n");
     i2c_initialize();
+    printf("I2C bus initialized, attempting LSM303DLHC detection...\n");
     if (!lsm303_init()) {
-        printf("ERROR: IMU initialization failed!\n");
+        printf("ERROR: IMU initialization failed! (Check Grove 4 connection)\n");
         return false;
     }
-    printf("✓ IMU system initialized\n");
+    printf("✓ IMU system initialized successfully\n");
     
     // Initialize motor and encoder system  
     if (!motor_system_init()) {
@@ -126,16 +128,25 @@ static heading_3d_t base_headings;     // Initial heading baseline
 static bool system_initialized = false;
 static uint32_t last_imu_update_ms;
 static uint32_t last_pid_update_ms;
+static uint32_t last_speed_update_ms;
+
+// Motor smoothing state variables
+static float smooth_motor_L = 0.35f;   // Smoothed left motor output
+static float smooth_motor_R = 0.35f;   // Smoothed right motor output
+static bool motor_smoothing_initialized = false;
+
+
 
 // Control parameters
 #define MAX_TILT_ANGLE 15.0f          // Maximum tilt angle to consider "level" (degrees)
-// Heading correction parameters
-#define HEADING_CORRECTION_GAIN 0.02f    // Proportional gain for heading correction
-#define HEADING_DEADBAND_DEGREES 1.0f    // Ignore heading errors smaller than this
-#define MAX_HEADING_CORRECTION 0.2f      // Maximum correction (20% of motor output)
+// Heading correction parameters  
+#define HEADING_CORRECTION_GAIN 0.0008f  // Much smaller gain to prevent hitting maximum
+#define HEADING_DEADBAND_DEGREES 10.0f   // Even larger deadband for stability
+#define MAX_HEADING_CORRECTION 0.03f     // Reduced max correction to 3%
 #define MIN_MOTOR_OUTPUT 0.1f             // Minimum motor output to maintain control
-#define IMU_UPDATE_INTERVAL_MS 50     // Read IMU every 50ms
-#define PID_UPDATE_INTERVAL_MS 50     // Run PID every 50ms
+#define IMU_UPDATE_INTERVAL_MS 200    // Slower IMU updates (200ms) for more stability
+#define PID_UPDATE_INTERVAL_MS 100    // Run PID every 100ms
+#define MOTOR_SMOOTHING_FACTOR 0.08f  // Even stronger smoothing (very slow changes)
 
 /**
  * @brief Check if robot is level and stable based on XZ tilt angle
@@ -193,27 +204,38 @@ void calculate_angle_correction(float error_headings,
     // Limit maximum correction to prevent instability
     correction = fmaxf(-MAX_HEADING_CORRECTION, fminf(MAX_HEADING_CORRECTION, correction));
     
-    // Apply differential correction with proper direction:
-    // Positive error (robot turned left of target) = need to turn right = slow left motor, speed up right
-    // Negative error (robot turned right of target) = need to turn left = speed up left, slow right
-    *corrected_output_L = base_motor_output_L - correction;  // Subtract correction from left
-    *corrected_output_R = base_motor_output_R + correction;  // Add correction to right
+    // Calculate target motor outputs
+    float target_L = base_motor_output_L - correction;  // Subtract correction from left
+    float target_R = base_motor_output_R + correction;  // Add correction to right
     
-    // Clamp outputs to valid range while maintaining minimum motor output
-    *corrected_output_L = fmaxf(MIN_MOTOR_OUTPUT, fminf(1.0f, *corrected_output_L));
-    *corrected_output_R = fmaxf(MIN_MOTOR_OUTPUT, fminf(1.0f, *corrected_output_R));
+    // Clamp target outputs to valid range
+    target_L = fmaxf(MIN_MOTOR_OUTPUT, fminf(1.0f, target_L));
+    target_R = fmaxf(MIN_MOTOR_OUTPUT, fminf(1.0f, target_R));
     
-    // Debug output
+    // Initialize smoothing on first run
+    if (!motor_smoothing_initialized) {
+        smooth_motor_L = target_L;
+        smooth_motor_R = target_R;
+        motor_smoothing_initialized = true;
+        printf("Motor smoothing initialized: L=%.3f, R=%.3f\n", smooth_motor_L, smooth_motor_R);
+    }
+    
+    // Apply exponential smoothing to reduce jitter
+    smooth_motor_L += (target_L - smooth_motor_L) * MOTOR_SMOOTHING_FACTOR;
+    smooth_motor_R += (target_R - smooth_motor_R) * MOTOR_SMOOTHING_FACTOR;
+    
+    // Use smoothed outputs
+    *corrected_output_L = smooth_motor_L;
+    *corrected_output_R = smooth_motor_R;
+    
+    // Debug output  
     static uint32_t debug_counter = 0;
-    if (debug_counter++ % 20 == 0) { // Print every 20 cycles (1 second at 50ms)
-        printf("Heading Error: %+4.1f° | Correction: %+5.3f | Motors: L=%.2f→%.2f R=%.2f→%.2f\n", 
-               error_headings, correction,
-               base_motor_output_L, *corrected_output_L, 
-               base_motor_output_R, *corrected_output_R);
+    if (debug_counter++ % 5 == 0) { // Print every 5 cycles to see smoothing better
+        printf("Heading Error: %+4.1f° | Correction: %+5.3f | Target: L=%.2f R=%.2f | Smooth: L=%.2f R=%.2f\n", 
+               error_headings, correction, target_L, target_R, *corrected_output_L, *corrected_output_R);
     }
 }
 
-// Removed powerbank_keepalive function - using active initialization instead
 
 /**
  * @brief Enhanced robot movement function (forward only, no reverse)
@@ -292,21 +314,41 @@ int main() {
     printf("Demo 1: Stable Straight Movement without IR Sensor\n");
     printf("================================\n\n");
     
-    // 1. Initialize complete robot system
-    if (!robot_full_system_init()) {
-        printf("INITIALIZATION FAILURE: One or more subsystems failed to initialize.\n");
-        printf("EMERGENCY STOP - System halted.\n");
+    // 1. Initialize motor system (critical - must work)
+    printf("Initializing motor and encoder system...\n");
+    if (!motor_system_init()) {
+        printf("CRITICAL ERROR: Motor system failed to initialize!\n");
+        printf("Cannot continue without motors - System halted.\n");
         return -1;
     }
+    printf("✓ Motor and encoder system initialized\n\n");
     
-    printf("System initialized successfully!\n\n");
-    
-    // 2. Establish baseline readings when robot is level and stable
-    printf("Waiting for robot to be level and stable...\n");
-    if (!establish_baseline_readings()) {
-        printf("BASELINE FAILURE: Could not establish stable baseline readings.\n");
-        printf("Please ensure robot is on level surface and try again.\n");
-        return -1;
+    // 2. Try to initialize IMU system (optional - robot can work without it)
+    bool imu_available = false;
+    printf("Attempting IMU initialization on Grove 4 (GP16=SDA, GP17=SCL)...\n");
+    i2c_initialize();
+    printf("I2C bus initialized, attempting LSM303DLHC detection...\n");
+    if (lsm303_init()) {
+        printf("✓ IMU system initialized - heading correction available\n");
+        
+        // Try to establish baseline readings
+        printf("Attempting IMU baseline calibration...\n");
+        if (establish_baseline_readings()) {
+            printf("✓ IMU calibration successful - full navigation available\n");
+            imu_available = true;
+        } else {
+            printf("⚠ IMU calibration failed - will use IMU without baseline\n");
+            // Set default baseline values
+            base_g_data[0] = 0.0f; base_g_data[1] = 0.0f; base_g_data[2] = 1.0f;
+            base_headings.xy_heading = 0.0f;
+            base_headings.xz_heading = 0.0f;  
+            base_headings.yz_heading = 0.0f;
+            imu_available = true;  // Still use IMU, just without perfect baseline
+        }
+    } else {
+        printf("⚠ IMU initialization failed - robot will move without heading correction\n");
+        printf("  This is OK - robot can still move forward, just without compass\n");
+        imu_available = false;
     }
     
     system_initialized = true;
@@ -328,7 +370,7 @@ int main() {
     float corrected_motor_L = 0.0f, corrected_motor_R = 0.0f;
     
     // Set initial target speed
-    float target_speed_mm_per_s = 200.0f;  // Start with 200mm/s (moderate speed)
+    float target_speed_mm_per_s = 100.0f;  // Start with 200mm/s (moderate speed)
     set_target_speed(target_speed_mm_per_s);
     
     uint32_t loop_counter = 0;
@@ -338,8 +380,8 @@ int main() {
     while (true) {
         uint32_t now_ms = to_ms_since_boot(get_absolute_time());
         
-        // Read IMU every 50ms (IMU_UPDATE_INTERVAL_MS)
-        if ((now_ms - last_imu_update_ms) >= IMU_UPDATE_INTERVAL_MS) {
+        // Read IMU every 50ms (only if available)
+        if (imu_available && (now_ms - last_imu_update_ms) >= IMU_UPDATE_INTERVAL_MS) {
             
             // Read accelerometer and magnetometer 
             int16_t raw_accel[3], raw_mag[3];
@@ -365,37 +407,52 @@ int main() {
                 // Calculate heading error
                 error_headings = calculate_heading_error(current_headings, base_headings);
             } else {
-                printf("IMU READ ERROR - Using last known values\n");
+                // IMU read failed - disable IMU for this session
+                printf("IMU read failed - disabling heading correction\n");
+                imu_available = false;
+                accel_ok = false;
+                mag_ok = false;
             }
             
             last_imu_update_ms = now_ms;
+
+        } else if (!imu_available) {
+            // No IMU - set default values
+            accel_ok = false;
+            mag_ok = false;
+            error_headings = 0.0f;  // No heading correction
         }
         
         // Simple motor control - use constant base speed with light speed feedback
         motor_output_L = 0.35f;  // Start with 35% base power
         motor_output_R = 0.35f;  // Start with 35% base power
         
-        // Update wheel speed measurements
-        update_wheel_speeds();
+        // Update wheel speed measurements (only every 300ms to allow even more pulse accumulation)
+        if (now_ms - last_speed_update_ms >= 300) {
+            update_wheel_speeds();
+            last_speed_update_ms = now_ms;
+        }
         
         // Light speed adjustment (much simpler than complex PID)
         float current_speed_L = get_last_speed_L_mm_per_s();
         float current_speed_R = get_last_speed_R_mm_per_s();
+        float target_speed_mm_per_s = 150.0f;  // Target speed for simple control
         
         // Simple proportional adjustment (very light)
-        if (current_speed_L < target_speed_mm_per_s * 0.8f) {
+        if (current_speed_L < target_speed_mm_per_s * 0.8f && current_speed_R < target_speed_mm_per_s * 0.8f) {
             motor_output_L += 0.05f;  // Slight increase if too slow
-        }
-        if (current_speed_R < target_speed_mm_per_s * 0.8f) {
             motor_output_R += 0.05f;  // Slight increase if too slow
         }
+        // if (current_speed_R < target_speed_mm_per_s * 0.8f) {
+        //     motor_output_R += 0.05f;  // Slight increase if too slow
+        // }
         
         // Clamp outputs
         motor_output_L = fmaxf(0.2f, fminf(0.6f, motor_output_L));
         motor_output_R = fmaxf(0.2f, fminf(0.6f, motor_output_R));
         
-        // Apply angle correction algorithm
-        if (accel_ok && mag_ok) {
+        // Apply angle correction algorithm (only if IMU is working)
+        if (imu_available && accel_ok && mag_ok) {
             calculate_angle_correction(error_headings, motor_output_L, motor_output_R,
                                      &corrected_motor_L, &corrected_motor_R);
         } else {
@@ -409,12 +466,19 @@ int main() {
         
         // Status reporting every 1 second
         if ((now_ms - last_status_print_ms) >= 1000) {
-            printf("[%lu] IMU:%s Speeds: L=%4.0f R=%4.0f mm/s | Motors: L=%.2f R=%.2f | Heading: %.1f° (Error: %+.1f°)\n",
-                   loop_counter / 20, // Approximate seconds
-                   (accel_ok && mag_ok) ? "OK" : "ERR",
-                   get_last_speed_L_mm_per_s(), get_last_speed_R_mm_per_s(),
-                   corrected_motor_L, corrected_motor_R,
-                   current_headings.xy_heading, error_headings);
+            if (imu_available) {
+                printf("[%lu] IMU:%s Speeds: L=%4.0f R=%4.0f mm/s | Motors: L=%.2f R=%.2f | Heading: %.1f° (Error: %+.1f°)\n",
+                       loop_counter / 20, // Approximate seconds
+                       (accel_ok && mag_ok) ? "OK" : "ERR",
+                       get_last_speed_L_mm_per_s(), get_last_speed_R_mm_per_s(),
+                       corrected_motor_L, corrected_motor_R,
+                       current_headings.xy_heading, error_headings);
+            } else {
+                printf("[%lu] IMU:DISABLED Speeds: L=%4.0f R=%4.0f mm/s | Motors: L=%.2f R=%.2f | Mode: Forward-only\n",
+                       loop_counter / 20, // Approximate seconds
+                    get_last_speed_L_mm_per_s(), get_last_speed_R_mm_per_s(),
+                    corrected_motor_L, corrected_motor_R);
+            }
             last_status_print_ms = now_ms;
         }
         
@@ -426,5 +490,4 @@ int main() {
     
     return 0;
 }
-//----------FUNCTIONS----------
 

@@ -35,7 +35,7 @@ static volatile float last_speed_R_mm_per_s = 0;  // last computed speed (right)
 static volatile absolute_time_t last_speed_update_time;
 //--------Motor Driver--------
 
-#define PWN_FREQ 10000
+#define PWN_FREQ 1000  // Reduced from 10000 to eliminate high-frequency noise
 
 #define PWN_M1A 8 //R
 #define PWN_M1B 9 //R
@@ -46,7 +46,7 @@ static volatile absolute_time_t last_speed_update_time;
 //--------PID controller--------
 
 // PID variables
-float target_speed_mm_per_s = 200.0f;  // Target speed 
+float target_speed_mm_per_s = 100.0f;  // Target speed 
 
 // Global variables
 float integral_L = 0.0f, integral_R = 0.0f;
@@ -55,9 +55,17 @@ absolute_time_t pid_last_time_L, pid_last_time_R;
 float last_speed_L = 0.0f, last_speed_R = 0.0f;
 float base_speed = 0.4f; //pwm level base on target speed 
 
-//PID constant for moving straight 
-float Kp_L = 0.005f, Ki_L = 0.004f, Kd_L = 0.0003f;
-float Kp_R = 0.008f, Ki_R = 0.004f, Kd_R = 0.0003f;
+//PID constant for moving straight (reduced for smoother operation)
+float Kp_L = 0.002f, Ki_L = 0.001f, Kd_L = 0.0001f;  // Reduced gains for left motor
+float Kp_R = 0.003f, Ki_R = 0.001f, Kd_R = 0.0001f;  // Reduced gains for right motor
+// float Kp_L = 0.005f, Ki_L = 0.004f, Kd_L = 0.0003f;
+// float Kp_R = 0.008f, Ki_R = 0.004f, Kd_R = 0.0003f;
+
+
+// PWM smoothing variables
+static float smooth_pwm_L = 0.0f;
+static float smooth_pwm_R = 0.0f;
+#define PWM_SMOOTHING_FACTOR 0.4f  // Smoothing factor for PWM outputs
 
 //--------Motor Driver Functions--------
 // Setting up PWM Levels
@@ -81,10 +89,14 @@ void robot_movement(float sL, float sR)
     sL = fmaxf(0.0f, fminf(1.0f, sL));
     sR = fmaxf(0.0f, fminf(1.0f, sR));
 
-    uint16_t pwm_level_L = (uint16_t)(fabs(sL) * 65535);
-    uint16_t pwm_level_R = (uint16_t)(fabs(sR) * 65535);
+    // Apply PWM smoothing to reduce jitter
+    smooth_pwm_L += (sL - smooth_pwm_L) * PWM_SMOOTHING_FACTOR;
+    smooth_pwm_R += (sR - smooth_pwm_R) * PWM_SMOOTHING_FACTOR;
+
+    uint16_t pwm_level_L = (uint16_t)(fabs(smooth_pwm_L) * 65535);
+    uint16_t pwm_level_R = (uint16_t)(fabs(smooth_pwm_R) * 65535);
 	
-    if(sR >= 0) {
+    if(smooth_pwm_R >= 0) {
         // Right motor FORWARD (now swapped)
         pwm_set_gpio_level(PWN_M1A, 0);
         pwm_set_gpio_level(PWN_M1B, pwm_level_R);
@@ -94,7 +106,7 @@ void robot_movement(float sL, float sR)
         pwm_set_gpio_level(PWN_M1B, 0);
     }
 
-    if(sL >= 0){ //if over 1, movement forward. A Pin
+    if(smooth_pwm_L >= 0){ //if over 1, movement forward. A Pin
         pwm_set_gpio_level(PWN_M2A, pwm_level_L); //1
         pwm_set_gpio_level(PWN_M2B, 0);          //0
     } else{ //if negative, movement backward. B Pin
@@ -252,15 +264,15 @@ bool motor_system_init(void) {
 void update_wheel_speeds() {
     absolute_time_t now = get_absolute_time();
     float dt = absolute_time_diff_us(last_speed_update_time, now) / 1e6f;
-    if (dt <= 0.01f) return;
+    if (dt <= 0.3f) return; // Changed to 0.3f (300ms minimum between updates for maximum pulse accumulation)
 
-    // Only calculate speed if we have pulses
-    float raw_L = (pulse_count_L > 0) ? (pulse_count_L * DIST_PER_PULSE_MM) / dt : last_speed_L_mm_per_s;
-    float raw_R = (pulse_count_R > 0) ? (pulse_count_R * DIST_PER_PULSE_MM) / dt : last_speed_R_mm_per_s;
+    // Only calculate speed if we have sufficient pulses (minimum 2 for reliability)
+    float raw_L = (pulse_count_L >= 2) ? (pulse_count_L * DIST_PER_PULSE_MM) / dt : last_speed_L_mm_per_s;
+    float raw_R = (pulse_count_R >= 2) ? (pulse_count_R * DIST_PER_PULSE_MM) / dt : last_speed_R_mm_per_s;
 
-    // Strong low-pass filtering
-    last_speed_L_mm_per_s = 0.7f * last_speed_L_mm_per_s + 0.3f * raw_L;
-    last_speed_R_mm_per_s = 0.7f * last_speed_R_mm_per_s + 0.3f * raw_R;
+    // Extremely strong low-pass filtering for maximum stability
+    last_speed_L_mm_per_s = 0.92f * last_speed_L_mm_per_s + 0.08f * raw_L;
+    last_speed_R_mm_per_s = 0.92f * last_speed_R_mm_per_s + 0.08f * raw_R;
 
     // Validate speeds
     if (fabs(raw_L - last_speed_L_mm_per_s) > 100.0f) last_speed_L_mm_per_s = last_speed_L_mm_per_s;

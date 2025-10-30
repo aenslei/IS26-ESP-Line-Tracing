@@ -6,8 +6,8 @@
 
 // I2C Configuration
 #define I2C_PORT i2c0
-#define I2C_SDA_PIN 0  // GP0 (SDA)
-#define I2C_SCL_PIN 1  // GP1 (SCL)
+#define I2C_SDA_PIN 16  // GP16 (SDA) - Grove 4
+#define I2C_SCL_PIN 17  // GP17 (SCL) - Grove 4
 #define LSM303_ACCEL_ADDR 0x19   // LSM303DLHC accelerometer I2C address
 #define LSM303_MAG_ADDR   0x1E   // LSM303DLHC magnetometer I2C address
 
@@ -59,11 +59,18 @@ bool mag_init(void);
 
 // Function to initialize I2C
 void i2c_initialize() {
+    printf("Initializing I2C on Grove 4:\n");
+    printf("  SDA: GP%d, SCL: GP%d\n", I2C_SDA_PIN, I2C_SCL_PIN);
+    printf("  Speed: 100kHz\n");
+    
     i2c_init(I2C_PORT, 100 * 1000); // set i2c speed to 100khz
-    gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C); // gp0 as sda pin
-    gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C); // gp1 as scl pin
+    gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C); // gp16 as sda pin
+    gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C); // gp17 as scl pin
     gpio_pull_up(I2C_SDA_PIN); // enable pullup on sda
     gpio_pull_up(I2C_SCL_PIN); // enable pullup on scl
+    
+    sleep_ms(100); // Allow I2C to stabilize
+    printf("  I2C hardware initialized with internal pull-ups\n");
 }
 
 // Function to write a single register
@@ -84,17 +91,26 @@ bool read_register(uint8_t reg, uint8_t *data) {
 // Function to detect and initialize LSM303DLHC
 // Function to initialize LSM303DLHC (both accelerometer and magnetometer)  
 bool lsm303_init() {
+    printf("Starting LSM303DLHC initialization...\n");
+    printf("Expected addresses: 0x%02X (accel), 0x%02X (mag)\n", LSM303_ACCEL_ADDR, LSM303_MAG_ADDR);
+    
     // Check if LSM303DLHC is present
+    printf("Reading WHO_AM_I register (0x%02X) from accelerometer...\n", LSM303_WHO_AM_I_A);
     uint8_t who_am_i;
     if (!read_register(LSM303_WHO_AM_I_A, &who_am_i)) { // try to read sensor id
-        printf("Error: Cannot communicate with LSM303DLHC\n");
+        printf("Error: Cannot communicate with LSM303DLHC accelerometer\n");
+        printf("  I2C communication failed - check Grove 4 wiring!\n");
         return false;
     }
     
+    printf("✓ WHO_AM_I register read successfully: 0x%02X\n", who_am_i);
+    
     if (who_am_i != 0x33) { // check if correct sensor id (0x33)
-        printf("Error: LSM303DLHC not found (WHO_AM_I = 0x%02X)\n", who_am_i);
+        printf("Error: LSM303DLHC not found (WHO_AM_I = 0x%02X, expected 0x33)\n", who_am_i);
         return false;
     }
+    
+    printf("✓ LSM303DLHC accelerometer detected correctly!\n");
     
     // Enable accelerometer: 50Hz, normal power mode, all axes enabled
     if (!write_register(LSM303_CTRL_REG1_A, 0x47)) { // 0x47 = 50hz + normal mode + xyz on
