@@ -376,7 +376,7 @@ int main() {
             barcodeSecondChar = barcodeRead[1];
             barcodeThirdChar = barcodeRead[2];
             printf("Barcode: %c%c%c\n\r", barcodeFirstChar, barcodeSecondChar, barcodeThirdChar);
-            printf("Data character: %c\n\r", barcodeSecondChar);
+            printf("Data character: %c\n\r", barcodeSecondChar);  //letter decoded 
             printf("****************************************\n\r\n\r");
             
             // Clear for next barcode but keep scanning
