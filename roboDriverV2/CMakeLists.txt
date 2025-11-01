@@ -14,6 +14,8 @@ add_executable(roboDriverV2
         roboDriverV2.c
         WithPID.c
         IMUDriver.c
+	telemetry.c
+	functions.c
         )
 
 # pull in common dependencies
@@ -23,6 +25,8 @@ target_link_libraries(roboDriverV2
     hardware_timer
     hardware_pwm
     hardware_i2c
+    pico_cyw43_arch_lwip_threadsafe_background
+    pico_lwip_mqtt
 )
 
 # create map/bin/hex/uf2 file etc.

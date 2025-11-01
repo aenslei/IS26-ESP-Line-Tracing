@@ -1,6 +1,26 @@
 #include "roboDriver_V2.h"  // Includes everything
 #include "../IMU-Driver-V1/IMUDriver.h"  // Direct IMU access
 #include "WithPID.h"  // Direct PID access
+#include "functions.h"
+#include "telemetry.h"
+
+// ---------------- Wi-Fi/MQTT config ----------------
+#ifndef WIFI_SSID
+#define WIFI_SSID   "X3X200Ultra"
+#endif
+#ifndef WIFI_PASS
+#define WIFI_PASS   "iwAnn@sl33pZZZ"
+#endif
+#ifndef BROKER_IP
+#define BROKER_IP   "192.168.244.251"
+#endif
+#ifndef BROKER_PORT
+#define BROKER_PORT 1883
+#endif
+#ifndef CLIENT_ID
+#define CLIENT_ID   "pico-car"
+#endif
+
 
 // Function declarations from WithPID.c
 float get_last_speed_L_mm_per_s(void);
@@ -309,6 +329,27 @@ bool establish_baseline_readings(void) {
 int main() {
     stdio_init_all();
     sleep_ms(2000); // Wait for USB connection
+
+    if (!wifi_connect(WIFI_SSID, WIFI_PASS)) {
+        printf("[WiFi] connect failed\n");
+        while (1) sleep_ms(2000);
+    }
+
+    mqtt_bus_config_t cfg = {
+        .broker_ip    = BROKER_IP,
+        .broker_port  = BROKER_PORT,
+        .client_id    = CLIENT_ID,
+        .will_topic   = "state/online",
+        .will_msg     = "0",
+        .will_qos     = 0,
+        .will_retain  = true,
+        .keep_alive_s = 30
+    };
+    mqtt_bus_connect(&cfg);
+    while (!mqtt_bus_is_connected()) sleep_ms(20);
+    pub_state_online(true);
+
+    telemetry_init("team", "car");  // Ensures debug topics are valid
     
     printf("\n=== ROBO DRIVER V2 SYSTEM ===\n");
     printf("Demo 1: Stable Straight Movement without IR Sensor\n");
@@ -468,19 +509,38 @@ int main() {
         if ((now_ms - last_status_print_ms) >= 1000) {
             if (imu_available) {
                 printf("[%lu] IMU:%s Speeds: L=%4.0f R=%4.0f mm/s | Motors: L=%.2f R=%.2f | Heading: %.1f° (Error: %+.1f°)\n",
-                       loop_counter / 20, // Approximate seconds
-                       (accel_ok && mag_ok) ? "OK" : "ERR",
-                       get_last_speed_L_mm_per_s(), get_last_speed_R_mm_per_s(),
-                       corrected_motor_L, corrected_motor_R,
-                       current_headings.xy_heading, error_headings);
-            } else {
-                printf("[%lu] IMU:DISABLED Speeds: L=%4.0f R=%4.0f mm/s | Motors: L=%.2f R=%.2f | Mode: Forward-only\n",
-                       loop_counter / 20, // Approximate seconds
+                    loop_counter / 20,
+                    (accel_ok && mag_ok) ? "OK" : "ERR",
                     get_last_speed_L_mm_per_s(), get_last_speed_R_mm_per_s(),
-                    corrected_motor_L, corrected_motor_R);
-            }
-            last_status_print_ms = now_ms;
+                    corrected_motor_L, corrected_motor_R,
+                    current_headings.xy_heading, error_headings);
+
+            // Send via telemetry as well
+            telemetry_pub_str("status/imu", (accel_ok && mag_ok) ? "OK" : "ERR", 0, false);
+            telemetry_pub_f32("status/speed_left",  get_last_speed_L_mm_per_s(), 0, false);
+            telemetry_pub_f32("status/speed_right", get_last_speed_R_mm_per_s(), 0, false);
+            telemetry_pub_f32("status/motor_left",  corrected_motor_L, 0, false);
+            telemetry_pub_f32("status/motor_right", corrected_motor_R, 0, false);
+            telemetry_pub_f32("status/heading",     current_headings.xy_heading, 0, false);
+            telemetry_pub_f32("status/heading_error", error_headings, 0, false);
+
+        } else {
+            printf("[%lu] IMU:DISABLED Speeds: L=%4.0f R=%4.0f mm/s | Motors: L=%.2f R=%.2f | Mode: Forward-only\n",
+               loop_counter / 20,
+               get_last_speed_L_mm_per_s(), get_last_speed_R_mm_per_s(),
+               corrected_motor_L, corrected_motor_R);
+
+            // Still publish key values, but heading unavailable
+            telemetry_pub_str("status/imu", "DISABLED", 0, false);
+            telemetry_pub_f32("status/speed_left",  get_last_speed_L_mm_per_s(), 0, false);
+            telemetry_pub_f32("status/speed_right", get_last_speed_R_mm_per_s(), 0, false);
+            telemetry_pub_f32("status/motor_left",  corrected_motor_L, 0, false);
+            telemetry_pub_f32("status/motor_right", corrected_motor_R, 0, false);
         }
+
+        last_status_print_ms = now_ms;
+    }
+
         
         loop_counter++;
         
