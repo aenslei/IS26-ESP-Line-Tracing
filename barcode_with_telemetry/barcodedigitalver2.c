@@ -420,11 +420,35 @@ int main() {
             printf("Data character: %c\n\r", barcodeSecondChar);  //letter decoded 
             printf("****************************************\n\r\n\r");
 
+            // Publish full barcode and decoded data character
             telemetry_pub_str("barcode/full", (char[]){barcodeFirstChar, barcodeSecondChar, barcodeThirdChar, '\0'}, 0, false);
-
 
             char data_char[2] = { barcodeSecondChar, '\0' };
             telemetry_pub_str("barcode/data", data_char, 0, false);
+
+            // Determine direction
+            char direction[6] = "NONE";  // Default
+
+            switch (barcodeSecondChar) {
+                case 'A': case 'C': case 'E': case 'G': case 'I': case 'K': case 'M':
+                case 'O': case 'Q': case 'S': case 'U': case 'W': case 'Y':
+                    strcpy(direction, "RIGHT");
+                    break;
+
+                case 'B': case 'D': case 'F': case 'H': case 'J': case 'L': case 'N':
+                case 'P': case 'R': case 'T': case 'V': case 'X': case 'Z':
+                    strcpy(direction, "LEFT");
+                    break;
+
+                default:
+                    strcpy(direction, "STRAIGHT");
+                    break;
+                }
+
+            // Print and publish direction
+            printf("Instruction: Move %s\n\r", direction);
+            telemetry_pub_str("barcode/instruction", direction, 0, false);
+
 
             
             // Clear for next barcode but keep scanning
