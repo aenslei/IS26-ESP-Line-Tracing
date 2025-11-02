@@ -27,7 +27,7 @@ enum bartype{
     THIN_WHITE // 3
 };
 
-// CORRECTED CODE 39 CHARACTER MAPPINGS
+//mapping
 static char* A_ARRAY_MAP = "031312130";
 static char* B_ARRAY_MAP = "130312130";
 static char* C_ARRAY_MAP = "030312131";
