@@ -36,7 +36,7 @@
 #define LEFT_LIMIT        -50
 #define RIGHT_LIMIT        50
 #define EDGE_THRESHOLD_CM   8.0f
-#define DETECT_RANGE_CM    15.0f
+#define DETECT_RANGE_CM    30.0f
 #define WARNING_RANGE_CM    5.0f
 #define SCAN_SETTLE_MS    250
 #define SCAN_DELAY_MS     2000
@@ -198,7 +198,7 @@ int main(void) {
                     left_edge_dist  = prev_dist;
                     mqtt_bus_publishf("sensors/edges/left_deg", 0, false, "%d", left_edge_angle);
                     mqtt_bus_publishf("sensors/edges/left_cm",  0, false, "%.2f", left_edge_dist);
-                    printf(" [EDGE] LEFT boundary @ %d deg (%.2f → %.2f)\n", prev_angle, prev_dist, dist);
+                    printf(" [EDGE] LEFT boundary @ %d deg (%.2f -> %.2f)\n", prev_angle, prev_dist, dist);
                 }
             }
             prev_dist = dist;
@@ -254,12 +254,12 @@ int main(void) {
 
             if (right_edge_dist > left_edge_dist + 0.01f) {
                 mqtt_bus_publish_str("decision", "RIGHT", 0, false);
-                mqtt_bus_publishf("turn_angle", 0, false, "%d", -right_edge_angle); // ✅ flipped
-                printf("[DECISION] More space RIGHT -> turn RIGHT %d deg (%.2f cm)\n", -right_edge_angle, right_edge_dist);
+                mqtt_bus_publishf("turn_angle", 0, false, "%d", right_edge_angle); //flipped
+                printf("[DECISION] More space RIGHT -> turn RIGHT %d deg (%.2f cm)\n", right_edge_angle, right_edge_dist);
             } else if (left_edge_dist > right_edge_dist + 0.01f) {
                 mqtt_bus_publish_str("decision", "LEFT", 0, false);
-                mqtt_bus_publishf("turn_angle", 0, false, "%d", -left_edge_angle); // ✅ flipped
-                printf("[DECISION] More space LEFT -> turn LEFT %d deg (%.2f cm)\n", -left_edge_angle, left_edge_dist);
+                mqtt_bus_publishf("turn_angle", 0, false, "%d", left_edge_angle); //flipped
+                printf("[DECISION] More space LEFT -> turn LEFT %d deg (%.2f cm)\n", left_edge_angle, left_edge_dist);
             } else {
                 mqtt_bus_publish_str("decision", "RIGHT", 0, false);
                 mqtt_bus_publishf("turn_angle", 0, false, "0");
@@ -268,12 +268,12 @@ int main(void) {
 
         } else if (left_edge_found) {
             mqtt_bus_publish_str("decision", "LEFT", 0, false);
-            mqtt_bus_publishf("turn_angle", 0, false, "%d", -left_edge_angle);
+            mqtt_bus_publishf("turn_angle", 0, false, "%d", left_edge_angle);
             printf("[DECISION] Only LEFT edge found -> turn LEFT.\n");
 
         } else if (right_edge_found) {
             mqtt_bus_publish_str("decision", "RIGHT", 0, false);
-            mqtt_bus_publishf("turn_angle", 0, false, "%d", -right_edge_angle);
+            mqtt_bus_publishf("turn_angle", 0, false, "%d", right_edge_angle);
             printf("[DECISION] Only RIGHT edge found -> turn RIGHT.\n");
 
         } else {
