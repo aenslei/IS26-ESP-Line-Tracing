@@ -20,9 +20,9 @@ void ultrasonic_init(uint trig, uint echo) {
 
 // --- Basic raw distance measurement (in cm) ---
 float ultrasonic_get_distance_cm(void) {
-    // Send 10 µs trigger pulse
+    // Send 3 nano second trigger pulse
     gpio_put(trig_pin, 1);
-    sleep_us(10);
+    sleep_us(3);
     gpio_put(trig_pin, 0);
 
     // Wait for echo to start
@@ -54,7 +54,7 @@ float ultrasonic_get_distance_med5(void) {
     // Collect samples
     for (int i = 0; i < 5; i++) {
         samples[i] = ultrasonic_get_distance_cm();
-        sleep_ms(10);
+        sleep_ms(3);
     }
 
     // Sort (simple insertion sort)
