@@ -28,8 +28,8 @@
 #endif
 
 // ---------------- Hardware + Scan Params ----------------
-#define TRIG_PIN            1
-#define ECHO_PIN            0
+#define TRIG_PIN            26
+#define ECHO_PIN            6
 #define SERVO_PIN          15
 #define STEP_SIZE           5
 #define LEFT_LIMIT        -50
