@@ -3,6 +3,8 @@
 #include <inttypes.h>
 #include <string.h>
 #include <math.h>
+#include <functions.h>
+#include <telemetry.h>
 
 #include "pico/stdlib.h"
 #include "pico/stdio.h"
@@ -10,11 +12,27 @@
 #include "hardware/gpio.h"
 
 #define BAUD_RATE 115200
-#define DIGITAL_PIN 1       //GP1 for barcode scanning (digital)
-#define RESET_BUTTON_PIN 21 //GPIO as reset btn 
+#define DIGITAL_PIN 26
 
 #define BARCODE_BUF_SIZE 10
 #define BARCODE_ARR_SIZE 9  // Collect exactly 9 bars like the working analog version
+
+// ---------------- Wi-Fi/MQTT config ----------------
+#ifndef WIFI_SSID
+#define WIFI_SSID   "X3X200Ultra"
+#endif
+#ifndef WIFI_PASS
+#define WIFI_PASS   "iwAnn@sl33pZZZ"
+#endif
+#ifndef BROKER_IP
+#define BROKER_IP   "192.168.244.251"
+#endif
+#ifndef BROKER_PORT
+#define BROKER_PORT 1883
+#endif
+#ifndef CLIENT_ID
+#define CLIENT_ID   "pico-car"
+#endif
 
 uint8_t barcodeFirstChar=0;
 uint8_t barcodeSecondChar=0;
@@ -28,33 +46,32 @@ enum bartype{
 };
 
 static char* A_ARRAY_MAP = "031312130";
-static char* B_ARRAY_MAP = "130213130";
-static char* C_ARRAY_MAP = "030213131";
-static char* D_ARRAY_MAP = "131203130";
-static char* E_ARRAY_MAP = "031203131";
-static char* F_ARRAY_MAP = "130203131";
-static char* G_ARRAY_MAP = "131213030";
-static char* H_ARRAY_MAP = "031213031";
-static char* I_ARRAY_MAP = "130213031";
-static char* J_ARRAY_MAP = "131203031";
-static char* K_ARRAY_MAP = "031213120";
-static char* L_ARRAY_MAP = "130213120";
-static char* M_ARRAY_MAP = "030213121";
-static char* N_ARRAY_MAP = "131203120";
-static char* O_ARRAY_MAP = "031203121";
-static char* P_ARRAY_MAP = "130203121";
-static char* Q_ARRAY_MAP = "131213020";
-static char* R_ARRAY_MAP = "031213021";
-static char* S_ARRAY_MAP = "130213021";
-static char* T_ARRAY_MAP = "131203021";
-static char* U_ARRAY_MAP = "021213130";
-static char* V_ARRAY_MAP = "120213130";
-static char* W_ARRAY_MAP = "020213131";
-static char* X_ARRAY_MAP = "121203130";
-static char* Y_ARRAY_MAP = "021203131";
+static char* B_ARRAY_MAP = "130312130";
+static char* C_ARRAY_MAP = "030312131";
+static char* D_ARRAY_MAP = "131302130";
+static char* E_ARRAY_MAP = "031302131";
+static char* F_ARRAY_MAP = "130302131";
+static char* G_ARRAY_MAP = "131312030";
+static char* H_ARRAY_MAP = "031312031";
+static char* I_ARRAY_MAP = "130312031";
+static char* J_ARRAY_MAP = "131302031";
+static char* K_ARRAY_MAP = "031313120";
+static char* L_ARRAY_MAP = "130313120";
+static char* M_ARRAY_MAP = "030313121";
+static char* N_ARRAY_MAP = "131303120";
+static char* O_ARRAY_MAP = "031303121";
+static char* P_ARRAY_MAP = "130303121";
+static char* Q_ARRAY_MAP = "131313020";
+static char* R_ARRAY_MAP = "031313021";
+static char* S_ARRAY_MAP = "130313021";
+static char* T_ARRAY_MAP = "131303021";
+static char* U_ARRAY_MAP = "021313130";
+static char* V_ARRAY_MAP = "120313130";
+static char* W_ARRAY_MAP = "020313131";
+static char* X_ARRAY_MAP = "121303130";
+static char* Y_ARRAY_MAP = "021303131";
 static char* Z_ARRAY_MAP = "120303131";
-static char* ASTERISK_ARRAY_MAP = "121303031";
-
+static char* ASTERISK_ARRAY_MAP = "121303031"
 static int barcode_arr_index = 0;
 static absolute_time_t transition_time;
 static int last_state = -1;
@@ -64,10 +81,6 @@ static volatile bool processing = false;  // Prevent interrupts during decode
 static volatile bool ready_to_decode = false;  // Signal main loop to decode
 static volatile bool waiting_for_start = true;  // NEW: waiting for * delimiter
 
-// Button debounce variables
-static absolute_time_t last_button_press_time;
-static const uint32_t DEBOUNCE_DELAY_MS = 200;  // 200ms debounce
-
 struct barTransition {
     int isBlack;              // 1 = black, 0 = white
     int64_t duration_us;      // Duration in microseconds
@@ -76,72 +89,6 @@ struct barTransition {
 
 static struct barTransition barTransitions[BARCODE_ARR_SIZE];
 static char barcodeRead[3] = {0};
-
-// GPIO interrupt handler for digital pin transitions
-void barcode_gpio_callback(uint gpio, uint32_t events) {
-    if(!scanning_enabled || processing) return;  // Exit immediately if processing
-    
-    // Read current state: 1 = BLACK, 0 = WHITE
-    int current_state = gpio_get(DIGITAL_PIN);
-    
-    // First reading - just record the state and time
-    if(last_state == -1){
-        last_state = current_state;
-        transition_time = get_absolute_time();
-        printf("[START] Initial state: %s\n\r", current_state ? "BLACK" : "WHITE");
-        return;
-    }
-    
-    // State changed - we have a transition!
-    if(current_state != last_state){
-        absolute_time_t now = get_absolute_time();
-        int64_t duration = absolute_time_diff_us(transition_time, now);
-        
-        if(duration < 0) duration = -duration;
-        
-        // Store the bar that just ended
-        if(barcode_arr_index < BARCODE_ARR_SIZE){
-            barTransitions[barcode_arr_index].isBlack = last_state;
-            barTransitions[barcode_arr_index].duration_us = duration;
-            
-            transition_count++;
-            printf("[TRANSITION %"PRIu32"] %s bar lasted %"PRId64" us\n\r",
-                   transition_count,
-                   last_state ? "BLACK" : "WHITE",
-                   duration);
-            
-            barcode_arr_index++;
-            
-            // Check if we've collected 9 bars (one complete character)
-            if(barcode_arr_index == BARCODE_ARR_SIZE){
-                printf("\n\r[INFO] 9 bars collected!\n\r");
-                scanning_enabled = false;
-                ready_to_decode = true;  // Signal main loop to decode
-            }
-        }
-        
-        // Update for next transition
-        last_state = current_state;
-        transition_time = now;
-    }
-}
-
-
-void init_pin_and_button(){
-    // Initialize GPIO for digital pin
-    gpio_init(DIGITAL_PIN);
-    gpio_set_dir(DIGITAL_PIN, GPIO_IN);
-    gpio_set_irq_enabled_with_callback(DIGITAL_PIN, 
-                                       GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, 
-                                       true, 
-                                       &barcode_gpio_callback);
-    // Initialize GPIO for reset button
-    gpio_init(RESET_BUTTON_PIN);
-    gpio_set_dir(RESET_BUTTON_PIN, GPIO_IN);
-    gpio_pull_up(RESET_BUTTON_PIN);  // Enable pull-up resistor (button connects to GND)
-
-}
-
 
 static void appendToBarcodeRead(char barcodeChar){
     barcodeRead[0] = barcodeRead[1];
@@ -309,71 +256,80 @@ static char compareTwoArray() {
     return 0;
 }
 
-//determine the to turn left or right
-const char* char_to_command(char decoded_char){ //assuming the char is upper case
-    switch (decoded_char) {
-        // Right turn letters
-        case 'A':
-        case 'C':
-        case 'E':
-        case 'G':
-        case 'I':
-        case 'K':
-        case 'M':
-        case 'O':
-        case 'Q':
-        case 'S':
-        case 'U':
-        case 'W':
-        case 'Y':
-            return "RIGHT";
-            break;
-
-        // Left turn letters
-        case 'B':
-        case 'D':
-        case 'F':
-        case 'H':
-        case 'J':
-        case 'L':
-        case 'N':
-        case 'P':
-        case 'R':
-        case 'T':
-        case 'V':
-        case 'X':
-        case 'Z':
-            return "LEFT";
-            break;
-
-        // Invalid letter
-        default:
-            return "INVALID";
-            break;
+// GPIO interrupt handler for digital pin transitions
+void gpio_callback(uint gpio, uint32_t events) {
+    if(!scanning_enabled || processing) return;  // Exit immediately if processing
+    
+    // Read current state: 1 = BLACK, 0 = WHITE
+    int current_state = gpio_get(DIGITAL_PIN);
+    
+    // First reading - just record the state and time
+    if(last_state == -1){
+        last_state = current_state;
+        transition_time = get_absolute_time();
+        printf("[START] Initial state: %s\n\r", current_state ? "BLACK" : "WHITE");
+        return;
     }
-}
-
-// Check if button is pressed with debouncing
-static bool btn_to_reset_scanner(){
-    if(gpio_get(RESET_BUTTON_PIN) == 0){  // Button pressed (active LOW)
+    
+    // State changed - we have a transition!
+    if(current_state != last_state){
         absolute_time_t now = get_absolute_time();
-        int64_t time_since_last_press = absolute_time_diff_us(last_button_press_time, now) / 1000;  // Convert to ms
+        int64_t duration = absolute_time_diff_us(transition_time, now);
         
-        if(time_since_last_press > DEBOUNCE_DELAY_MS){
-            last_button_press_time = now;
-            return true;
+        if(duration < 0) duration = -duration;
+        
+        // Store the bar that just ended
+        if(barcode_arr_index < BARCODE_ARR_SIZE){
+            barTransitions[barcode_arr_index].isBlack = last_state;
+            barTransitions[barcode_arr_index].duration_us = duration;
+            
+            transition_count++;
+            printf("[TRANSITION %"PRIu32"] %s bar lasted %"PRId64" us\n\r",
+                   transition_count,
+                   last_state ? "BLACK" : "WHITE",
+                   duration);
+            
+            barcode_arr_index++;
+            
+            // Check if we've collected 9 bars (one complete character)
+            if(barcode_arr_index == BARCODE_ARR_SIZE){
+                printf("\n\r[INFO] 9 bars collected!\n\r");
+                scanning_enabled = false;
+                ready_to_decode = true;  // Signal main loop to decode
+            }
         }
-
-        // Call reset functions
-        resetScanner();
-        clearBarcodeRead();
+        
+        // Update for next transition
+        last_state = current_state;
+        transition_time = now;
     }
-    return false;
 }
-/*
+
 int main() {
     stdio_init_all();
     sleep_ms(3000);
+
+    if (!wifi_connect(WIFI_SSID, WIFI_PASS)) {
+        printf("[WiFi] connect failed\n");
+        while (1) sleep_ms(2000);
+    }
+
+    mqtt_bus_config_t cfg = {
+        .broker_ip    = BROKER_IP,
+        .broker_port  = BROKER_PORT,
+        .client_id    = CLIENT_ID,
+        .will_topic   = "state/online",
+        .will_msg     = "0",
+        .will_qos     = 0,
+        .will_retain  = true,
+        .keep_alive_s = 30
+    };
+    mqtt_bus_connect(&cfg);
+    while (!mqtt_bus_is_connected()) sleep_ms(20);
+    pub_state_online(true);
+
+    telemetry_init("team", "car");  // Ensures debug topics are valid
+
 
     printf("\n\r");
     printf("========================================\n\r");
@@ -449,9 +405,6 @@ int main() {
             resetScanner();
             clearBarcodeRead();
             printf("[INFO] Ready to scan!\n\r\n\r");
-        }else if(c == 'l' || c == 'L'){
-            show_line_sensor = !show_line_sensor;
-            printf("\n\r[INFO] Line sensor display %s\n\r\n\r", show_line_sensor ? "ENABLED" : "DISABLED");
         }
 
         // Check for valid barcode (complete *X* pattern)
@@ -463,8 +416,39 @@ int main() {
             barcodeSecondChar = barcodeRead[1];
             barcodeThirdChar = barcodeRead[2];
             printf("Barcode: %c%c%c\n\r", barcodeFirstChar, barcodeSecondChar, barcodeThirdChar);
-            printf("Data character: %c\n\r", barcodeSecondChar);
+            printf("Data character: %c\n\r", barcodeSecondChar);  //letter decoded 
             printf("****************************************\n\r\n\r");
+
+            // Publish full barcode and decoded data character
+            telemetry_pub_str("barcode/full", (char[]){barcodeFirstChar, barcodeSecondChar, barcodeThirdChar, '\0'}, 0, false);
+
+            char data_char[2] = { barcodeSecondChar, '\0' };
+            telemetry_pub_str("barcode/data", data_char, 0, false);
+
+            // Determine direction
+            char direction[6] = "NONE";  // Default
+
+            switch (barcodeSecondChar) {
+                case 'A': case 'C': case 'E': case 'G': case 'I': case 'K': case 'M':
+                case 'O': case 'Q': case 'S': case 'U': case 'W': case 'Y':
+                    strcpy(direction, "RIGHT");
+                    break;
+
+                case 'B': case 'D': case 'F': case 'H': case 'J': case 'L': case 'N':
+                case 'P': case 'R': case 'T': case 'V': case 'X': case 'Z':
+                    strcpy(direction, "LEFT");
+                    break;
+
+                default:
+                    strcpy(direction, "STRAIGHT");
+                    break;
+                }
+
+            // Print and publish direction
+            printf("Instruction: Move %s\n\r", direction);
+            telemetry_pub_str("barcode/instruction", direction, 0, false);
+
+
             
             // Clear for next barcode but keep scanning
             clearBarcodeRead();
@@ -474,4 +458,3 @@ int main() {
         sleep_ms(10);
     }
 }
-*/

@@ -27,32 +27,32 @@ enum bartype{
 };
 
 static char* A_ARRAY_MAP = "031312130";
-static char* B_ARRAY_MAP = "130213130";
-static char* C_ARRAY_MAP = "030213131";
-static char* D_ARRAY_MAP = "131203130";
-static char* E_ARRAY_MAP = "031203131";
-static char* F_ARRAY_MAP = "130203131";
-static char* G_ARRAY_MAP = "131213030";
-static char* H_ARRAY_MAP = "031213031";
-static char* I_ARRAY_MAP = "130213031";
-static char* J_ARRAY_MAP = "131203031";
-static char* K_ARRAY_MAP = "031213120";
-static char* L_ARRAY_MAP = "130213120";
-static char* M_ARRAY_MAP = "030213121";
-static char* N_ARRAY_MAP = "131203120";
-static char* O_ARRAY_MAP = "031203121";
-static char* P_ARRAY_MAP = "130203121";
-static char* Q_ARRAY_MAP = "131213020";
-static char* R_ARRAY_MAP = "031213021";
-static char* S_ARRAY_MAP = "130213021";
-static char* T_ARRAY_MAP = "131203021";
-static char* U_ARRAY_MAP = "021213130";
-static char* V_ARRAY_MAP = "120213130";
-static char* W_ARRAY_MAP = "020213131";
-static char* X_ARRAY_MAP = "121203130";
-static char* Y_ARRAY_MAP = "021203131";
+static char* B_ARRAY_MAP = "130312130";
+static char* C_ARRAY_MAP = "030312131";
+static char* D_ARRAY_MAP = "131302130";
+static char* E_ARRAY_MAP = "031302131";
+static char* F_ARRAY_MAP = "130302131";
+static char* G_ARRAY_MAP = "131312030";
+static char* H_ARRAY_MAP = "031312031";
+static char* I_ARRAY_MAP = "130312031";
+static char* J_ARRAY_MAP = "131302031";
+static char* K_ARRAY_MAP = "031313120";
+static char* L_ARRAY_MAP = "130313120";
+static char* M_ARRAY_MAP = "030313121";
+static char* N_ARRAY_MAP = "131303120";
+static char* O_ARRAY_MAP = "031303121";
+static char* P_ARRAY_MAP = "130303121";
+static char* Q_ARRAY_MAP = "131313020";
+static char* R_ARRAY_MAP = "031313021";
+static char* S_ARRAY_MAP = "130313021";
+static char* T_ARRAY_MAP = "131303021";
+static char* U_ARRAY_MAP = "021313130";
+static char* V_ARRAY_MAP = "120313130";
+static char* W_ARRAY_MAP = "020313131";
+static char* X_ARRAY_MAP = "121303130";
+static char* Y_ARRAY_MAP = "021303131";
 static char* Z_ARRAY_MAP = "120303131";
-static char* ASTERISK_ARRAY_MAP = "121303031";
+static char* ASTERISK_ARRAY_MAP = "121303031"
 
 static int barcode_arr_index = 0;
 static absolute_time_t transition_time;
@@ -376,7 +376,7 @@ int main() {
             barcodeSecondChar = barcodeRead[1];
             barcodeThirdChar = barcodeRead[2];
             printf("Barcode: %c%c%c\n\r", barcodeFirstChar, barcodeSecondChar, barcodeThirdChar);
-            printf("Data character: %c\n\r", barcodeSecondChar);
+            printf("Data character: %c\n\r", barcodeSecondChar);  //letter decoded 
             printf("****************************************\n\r\n\r");
             
             // Clear for next barcode but keep scanning
