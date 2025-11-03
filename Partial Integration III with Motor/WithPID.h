@@ -195,4 +195,7 @@ float get_robot_speed(void);
  */
 float get_robot_turn_rate(void);
 
+void emergency_stop(void);
+
+
 #endif // WITH_PID_H

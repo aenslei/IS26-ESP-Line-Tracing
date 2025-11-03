@@ -4,10 +4,10 @@ cmake_minimum_required(VERSION 3.13)
 set(PICO_BOARD pico_w)
 
 # Import Pico SDK
-include(/mnt/c/Users/lewta/Desktop/Pico_wsl/pico_sdk_import.cmake)
+include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 
 # Project metadata
-project(wifi_telemetry_servo_uss C CXX ASM)
+project(Demo_3 C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -19,7 +19,7 @@ add_link_options(-mcpu=cortex-m0plus -mthumb)
 pico_sdk_init()
 
 # Define your executable and source files
-add_executable(wifi_telemetry_servo_uss
+add_executable(Demo_3
     main.c
     functions.c
     telemetry.c
@@ -29,13 +29,13 @@ add_executable(wifi_telemetry_servo_uss
 )
 
 # Include paths (current dir + lwipopts)
-target_include_directories(wifi_telemetry_servo_uss PRIVATE
+target_include_directories(Demo_3 PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/lwipopts
 )
 
 # Link against Pico libraries and other required libs
-target_link_libraries(wifi_telemetry_servo_uss
+target_link_libraries(Demo_3
     pico_stdlib
     pico_cyw43_arch_lwip_threadsafe_background
     pico_lwip_mqtt
@@ -45,9 +45,9 @@ target_link_libraries(wifi_telemetry_servo_uss
 )
 
 # Enable USB and UART stdio
-pico_enable_stdio_usb(wifi_telemetry_servo_uss 1)
-pico_enable_stdio_uart(wifi_telemetry_servo_uss 1)
+pico_enable_stdio_usb(Demo_3 1)
+pico_enable_stdio_uart(Demo_3 1)
 
 # Generate .uf2 and .bin
-pico_add_extra_outputs(wifi_telemetry_servo_uss)
+pico_add_extra_outputs(Demo_3)
 

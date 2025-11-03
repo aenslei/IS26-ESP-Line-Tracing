@@ -65,6 +65,7 @@ float Kp_R = 0.003f, Ki_R = 0.001f, Kd_R = 0.0001f;  // Reduced gains for right 
 // PWM smoothing variables
 static float smooth_pwm_L = 0.0f;
 static float smooth_pwm_R = 0.0f;
+
 #define PWM_SMOOTHING_FACTOR 0.4f  // Smoothing factor for PWM outputs
 
 //--------Motor Driver Functions--------
@@ -261,6 +262,7 @@ bool motor_system_init(void) {
     return true; // Motor system initialized successfully
 }
 
+
 void update_wheel_speeds() {
     absolute_time_t now = get_absolute_time();
     float dt = absolute_time_diff_us(last_speed_update_time, now) / 1e6f;
@@ -300,6 +302,23 @@ float get_last_speed_R_mm_per_s(void) {
 void set_target_speed(float speed_mm_per_s) {
     target_speed_mm_per_s = speed_mm_per_s;
 }
+
+/*
+void set_smooth_pwm_L(float value) { smooth_pwm_L = value; }
+void set_smooth_pwm_R(float value) { smooth_pwm_R = value; }
+float get_smooth_pwm_L(void) { return smooth_pwm_L; }
+float get_smooth_pwm_R(void) { return smooth_pwm_R; }
+*/
+
+void emergency_stop() {
+    pwm_set_gpio_level(PWN_M1A, 0);
+    pwm_set_gpio_level(PWN_M1B, 0);
+    pwm_set_gpio_level(PWN_M2A, 0);
+    pwm_set_gpio_level(PWN_M2B, 0);
+    smooth_pwm_L = 0.0f;
+    smooth_pwm_R = 0.0f;
+}
+
 
 /*
 // Standalone main function - commented out when used as library

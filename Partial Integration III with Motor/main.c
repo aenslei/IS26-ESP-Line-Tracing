@@ -29,14 +29,14 @@
 #endif
 
 // ---------------- Hardware + Scan Params ----------------
-#define TRIG_PIN            1
-#define ECHO_PIN            0
+#define TRIG_PIN            26
+#define ECHO_PIN            6
 #define SERVO_PIN          15
 #define STEP_SIZE           5
 #define LEFT_LIMIT        -50
 #define RIGHT_LIMIT        50
 #define EDGE_THRESHOLD_CM   8.0f
-#define DETECT_RANGE_CM    10.0f
+#define DETECT_RANGE_CM    15.0f
 #define WARNING_RANGE_CM    5.0f
 #define SCAN_SETTLE_MS    250
 #define SCAN_DELAY_MS     2000
@@ -122,6 +122,12 @@ int main(void) {
     ultrasonic_init(TRIG_PIN, ECHO_PIN);
     servo_set_relative(phys_to_servo(0));
 
+    //init motor system 
+    if (!motor_system_init()) {
+        printf("Error: Failed to initialize motor system.\n");
+        return 1; // Exit the program with an error code
+    }
+
     printf("\n=== Servo + Ultrasonic Integration (with Debug Headers) ===\n");
 
     printf("\n=== Servo + Ultrasonic Integration (with MQTT) ===\n");
@@ -133,10 +139,9 @@ int main(void) {
         float front = ultrasonic_get_distance_med5();
         mqtt_bus_publishf("sensors/front_cm", 0, false, "%.2f", front);
 
-        robot_movement(0.35f, 0.35f);
-
         if (!dist_valid(front)) {
             printf("[FRONT] Invalid USS reading.\n");
+            mqtt_bus_publish_str("Invalid","USS Reading",0,false);
             sleep_ms(500);
             continue;
         }
@@ -148,18 +153,19 @@ int main(void) {
             mqtt_bus_publishf("sensors/reverse_cm", 0, false, "%.2f", reverse_cm);
             mqtt_bus_publish_str("decision", "REVERSE", 0, false);
             printf("[WARNING] Too close! Reverse %.2f cm to gain room.\n", reverse_cm);
-            robot_movement(0.0f, 0.0f);
             sleep_ms(500);
             continue;
+
         } else if (front <= DETECT_RANGE_CM) {
-            robot_movement(0.0f, 0.0f);
             printf("[DETECTED] Obstacle %.2f cm ahead - initiating scan.\n", front);
         } else {
             printf("[CLEAR] Path clear (%.2f cm)\n", front);
+            robot_movement(0.35f, 0.35f);
             sleep_ms(500);
             continue;
         }
-
+        
+        emergency_stop();
         pub_state_scan(true);
 
         bool left_edge_found=false, right_edge_found=false;
@@ -192,7 +198,7 @@ int main(void) {
                     left_edge_dist  = prev_dist;
                     mqtt_bus_publishf("sensors/edges/left_deg", 0, false, "%d", left_edge_angle);
                     mqtt_bus_publishf("sensors/edges/left_cm",  0, false, "%.2f", left_edge_dist);
-                    printf(" [EDGE] LEFT boundary @ %d deg (%.2f -> %.2f)\n", prev_angle, prev_dist, dist);
+                    printf(" [EDGE] LEFT boundary @ %d deg (%.2f → %.2f)\n", prev_angle, prev_dist, dist);
                 }
             }
             prev_dist = dist;
@@ -228,7 +234,7 @@ int main(void) {
                     right_edge_dist  = prev_dist;
                     mqtt_bus_publishf("sensors/edges/right_deg", 0, false, "%d", right_edge_angle);
                     mqtt_bus_publishf("sensors/edges/right_cm",  0, false, "%.2f", right_edge_dist);
-                    printf(" [EDGE] RIGHT boundary @ %d deg (%.2f -> %.2f)\n", prev_angle, prev_dist, dist);
+                    printf(" [EDGE] RIGHT boundary @ %d deg (%.2f → %.2f)\n", prev_angle, prev_dist, dist);
                 }
             }
             prev_dist = dist;
@@ -248,11 +254,11 @@ int main(void) {
 
             if (right_edge_dist > left_edge_dist + 0.01f) {
                 mqtt_bus_publish_str("decision", "RIGHT", 0, false);
-                mqtt_bus_publishf("turn_angle", 0, false, "%d", -right_edge_angle);
+                mqtt_bus_publishf("turn_angle", 0, false, "%d", -right_edge_angle); // ✅ flipped
                 printf("[DECISION] More space RIGHT -> turn RIGHT %d deg (%.2f cm)\n", -right_edge_angle, right_edge_dist);
             } else if (left_edge_dist > right_edge_dist + 0.01f) {
                 mqtt_bus_publish_str("decision", "LEFT", 0, false);
-                mqtt_bus_publishf("turn_angle", 0, false, "%d", -left_edge_angle);
+                mqtt_bus_publishf("turn_angle", 0, false, "%d", -left_edge_angle); // ✅ flipped
                 printf("[DECISION] More space LEFT -> turn LEFT %d deg (%.2f cm)\n", -left_edge_angle, left_edge_dist);
             } else {
                 mqtt_bus_publish_str("decision", "RIGHT", 0, false);
