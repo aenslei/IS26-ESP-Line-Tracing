@@ -5,7 +5,16 @@
 #include <stdio.h>
 
 static uint trig_pin, echo_pin;
+static float prev_valid_distance_ = 0.0f;
 
+// ---------------- Constants (Maker Pi Pico + HC-SR04 tuned) ----------------
+#define MAX_DISTANCE_CM        350.0f        // up to ~3.5 m reliable range
+#define SOUND_SPEED_CM_PER_US  0.0343f
+#define TIMEOUT_US             (MAX_DISTANCE_CM * 2.0f / SOUND_SPEED_CM_PER_US) // ≈20.4 ms
+#define SAMPLE_DELAY_MS        10
+#define SAMPLE_COUNT           5
+
+// --------------------------------------------------------------------------
 void ultrasonic_init(uint trig, uint echo) {
     trig_pin = trig;
     echo_pin = echo;
@@ -18,47 +27,61 @@ void ultrasonic_init(uint trig, uint echo) {
     gpio_set_dir(echo_pin, GPIO_IN);
 }
 
-// --- Basic raw distance measurement (in cm) ---
-float ultrasonic_get_distance_cm(void) {
-    // Send 3 nano second trigger pulse
+/**
+ * Perform one ultrasonic pulse measurement.
+ * Returns distance in cm, or 0.0f if timeout.
+ */
+static float ultrasonic_read_once(void) {
+    absolute_time_t start, end;
+
+    // precise 10 µs trigger pulse
     gpio_put(trig_pin, 1);
-    sleep_us(3);
+    busy_wait_us_32(10);
     gpio_put(trig_pin, 0);
 
-    // Wait for echo to start
-    absolute_time_t start = get_absolute_time();
-    while (!gpio_get(echo_pin)) {
-        if (absolute_time_diff_us(start, get_absolute_time()) > 30000)
-            return -1.0f;
+    // wait for echo start
+    start = get_absolute_time();
+    while (gpio_get(echo_pin) == 0) {
+        if (absolute_time_diff_us(start, get_absolute_time()) > TIMEOUT_US)
+            return 0.0f;
+        tight_loop_contents();
     }
 
-    absolute_time_t echo_start = get_absolute_time();
-
-    // Wait for echo to end
-    while (gpio_get(echo_pin)) {
-        if (absolute_time_diff_us(echo_start, get_absolute_time()) > 30000)
-            return -1.0f;
+    // measure echo duration
+    start = get_absolute_time();
+    while (gpio_get(echo_pin) == 1) {
+        if (absolute_time_diff_us(start, get_absolute_time()) > TIMEOUT_US)
+            return 0.0f;
+        tight_loop_contents();
     }
+    end = get_absolute_time();
 
-    absolute_time_t echo_end = get_absolute_time();
-
-    int64_t pulse_len = absolute_time_diff_us(echo_start, echo_end);
-    float distance_cm = (pulse_len / 2.0f) / 29.1f;
-    return distance_cm;
+    uint64_t pulse_us = absolute_time_diff_us(start, end);
+    return (pulse_us * SOUND_SPEED_CM_PER_US) / 2.0f;
 }
 
-// --- Median-of-5 measurement with outlier rejection ---
+/**
+ * Take multiple readings, apply median filter + adaptive outlier rejection.
+ */
 float ultrasonic_get_distance_med5(void) {
-    float samples[5];
+    float samples[SAMPLE_COUNT];
+    int valid = 0;
 
-    // Collect samples
-    for (int i = 0; i < 5; i++) {
-        samples[i] = ultrasonic_get_distance_cm();
-        sleep_ms(3);
+    for (int i = 0; i < SAMPLE_COUNT; i++) {
+        float d = ultrasonic_read_once();
+
+        if (d > 2.0f && d < MAX_DISTANCE_CM) {
+            samples[valid++] = d;
+        }
+
+        sleep_ms(SAMPLE_DELAY_MS);
     }
 
-    // Sort (simple insertion sort)
-    for (int i = 1; i < 5; i++) {
+    if (valid == 0)
+        return 0.0f;
+
+    // sort valid samples (insertion sort)
+    for (int i = 1; i < valid; i++) {
         float key = samples[i];
         int j = i - 1;
         while (j >= 0 && samples[j] > key) {
@@ -68,22 +91,37 @@ float ultrasonic_get_distance_med5(void) {
         samples[j + 1] = key;
     }
 
-    // Compute median
-    float median = samples[2];
+    // compute median
+    float median = samples[valid / 2];
 
-    // Optional: reject outliers that deviate >1.5× median
-    for (int i = 0; i < 5; i++) {
-        if (samples[i] > median * 1.5f || samples[i] < median * 0.5f)
-            samples[i] = median; // replace with median
+    // compute average absolute deviation
+    float dev_sum = 0.0f;
+    for (int i = 0; i < valid; i++)
+        dev_sum += fabsf(samples[i] - median);
+    float avg_dev = dev_sum / valid;
+
+    // --- Adaptive outlier rejection ---
+    // if median differs greatly from previous but noise is low, confirm twice
+    static int confirm_count = 0;
+    if (prev_valid_distance_ > 0.0f &&
+        fabsf(median - prev_valid_distance_) > 3 * avg_dev &&
+        avg_dev < 20.0f) {
+
+        confirm_count++;
+        if (confirm_count < 2)
+            return prev_valid_distance_;   // wait for second confirmation
+        confirm_count = 0;
+    } else {
+        confirm_count = 0;
     }
 
-    // Average remaining (to smooth)
-    float sum = 0.0f;
-    for (int i = 0; i < 5; i++) sum += samples[i];
-    return sum / 5.0f;
+    prev_valid_distance_ = median;
+    return median;
 }
 
-// --- Validity check (0–400 cm typical for HC-SR04) ---
+/**
+ * Simple validity check (0–400 cm typical)
+ */
 bool ultrasonic_is_valid(float cm) {
     return (cm > 0.0f && cm < 400.0f);
 }
